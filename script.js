@@ -2,6 +2,10 @@ const state = {
   user: null,
   isTeacher: false,
   profileSlug: "",
+  classroomId: "",
+  classroomName: "",
+  classrooms: [],
+  classroomStudents: {},
   customQuizzes: [],
   quizConfigs: {},
   remoteAttemptsByQuiz: {},
@@ -30,10 +34,15 @@ let pendingModalAction = null;
 const authScreen = document.getElementById("auth-screen");
 const homeScreen = document.getElementById("home-screen");
 const teacherScreen = document.getElementById("teacher-screen");
+const teacherClassroomsScreen = document.getElementById("teacher-classrooms-screen");
 const builderScreen = document.getElementById("builder-screen");
 const userChip = document.getElementById("user-chip");
+const userChipPopup = document.getElementById("user-chip-popup");
+const userChipPopupEmail = document.getElementById("user-chip-popup-email");
+const userChipPopupRename = document.getElementById("user-chip-popup-rename");
 const homeHeaderButton = document.getElementById("home-header-button");
 const teacherPanelButton = document.getElementById("teacher-panel-button");
+const teacherClassroomsButton = document.getElementById("teacher-classrooms-button");
 const teacherBuilderButton = document.getElementById("teacher-builder-button");
 const teacherRefreshButton = document.getElementById("teacher-refresh-button");
 const teacherUsersList = document.getElementById("teacher-users-list");
@@ -59,7 +68,12 @@ const profileSubmitButton = document.getElementById("profile-submit-button");
 const profileCancelButton = document.getElementById("profile-cancel-button");
 const profileForm = document.getElementById("profile-form");
 const profileNameInput = document.getElementById("profile-name");
+const profileClassroomSelect = document.getElementById("profile-classroom");
 const profileMessage = document.getElementById("profile-message");
+const teacherClassroomForm = document.getElementById("teacher-classroom-form");
+const teacherClassroomNameInput = document.getElementById("teacher-classroom-name");
+const teacherClassroomsList = document.getElementById("teacher-classrooms-list");
+const teacherClassroomsMessage = document.getElementById("teacher-classrooms-message");
 
 const screens = {
   start: document.getElementById("start-screen"),
@@ -67,18 +81,20 @@ const screens = {
   cancel: document.getElementById("cancel-screen"),
   result: document.getElementById("result-screen"),
   review: document.getElementById("review-screen"),
+  classrooms: document.getElementById("teacher-classrooms-screen"),
   builder: document.getElementById("builder-screen")
 };
 
-const statsGrid = document.getElementById("stats-grid");
 const quizGrid = document.getElementById("quiz-grid");
 const quizSearch = document.getElementById("quiz-search");
 const selectedQuizTitle = document.getElementById("selected-quiz-title");
 const selectedQuizDescription = document.getElementById("selected-quiz-description");
 const selectedQuizMeta = document.getElementById("selected-quiz-meta");
 const startRulesList = document.getElementById("start-rules-list");
+const timedWarningDisplay = document.getElementById("timed-warning-display");
 const startForm = document.getElementById("start-form");
 const startQuizButton = document.getElementById("start-quiz-button");
+const startReloadButton = document.getElementById("start-reload-button");
 const studentNameDisplay = document.getElementById("student-name-display");
 
 const questionTitle = document.getElementById("question-title");
@@ -116,6 +132,9 @@ const reviewBackButton = document.getElementById("review-back-button");
 
 startForm.addEventListener("submit", handleStartQuiz);
 nextButton.addEventListener("click", handleNextQuestion);
+if (startReloadButton) {
+  startReloadButton.addEventListener("click", () => { window.location.reload(); });
+}
 if (clearAnswerButton) {
   clearAnswerButton.addEventListener("click", () => {
     if (state.timedOutQuestionId) {
@@ -148,7 +167,9 @@ cancelButton.addEventListener("click", () => {
     title: "Cancelar questionário?",
     text: "Se você cancelar, não terá mais acesso a este quiz.",
     confirmLabel: "Sim, cancelar",
-    onConfirm: () => cancelQuiz("Questionário cancelado manualmente.")
+    onConfirm: async () => {
+      await cancelQuiz("Questionário bloqueado ao cancelar a avaliação.", { blockedByViolation: true });
+    }
   });
 });
 
@@ -170,10 +191,20 @@ policyReturnButton.addEventListener("click", handleReturnToQuiz);
 resultBackHomeButton.addEventListener("click", showHome);
 cancelBackHomeButton.addEventListener("click", showHome);
 if (resultReviewButton) {
-  resultReviewButton.addEventListener("click", () => openReviewScreen("result"));
+  resultReviewButton.addEventListener("click", async () => {
+    if (state.selectedQuizId) {
+      await syncLatestAttemptForQuiz(state.selectedQuizId);
+    }
+    openReviewScreen("result");
+  });
 }
 if (cancelReviewButton) {
-  cancelReviewButton.addEventListener("click", () => openReviewScreen("cancel"));
+  cancelReviewButton.addEventListener("click", async () => {
+    if (state.selectedQuizId) {
+      await syncLatestAttemptForQuiz(state.selectedQuizId);
+    }
+    openReviewScreen("cancel");
+  });
 }
 if (reviewBackButton) {
   reviewBackButton.addEventListener("click", async () => {
@@ -181,7 +212,42 @@ if (reviewBackButton) {
       await openTeacherPanel();
       return;
     }
-    showOnlyScreen(state.reviewBackScreen || "result");
+
+    if (state.reviewBackScreen === "home") {
+      showHome();
+      return;
+    }
+
+    if (state.selectedQuizId) {
+      await syncLatestAttemptForQuiz(state.selectedQuizId);
+    }
+
+    const quiz = getSelectedQuiz();
+    const attempt = getAttemptForSelectedQuiz();
+
+    if (state.reviewBackScreen === "cancel") {
+      const base = attempt?.cancelReason || "Questionário cancelado por violação de regras.";
+      if (quiz && !quiz.allowStudentReview) {
+        cancelMessage.innerHTML = getBlockedReviewNoteHtml(base);
+      } else {
+        cancelMessage.textContent = base;
+      }
+      if (quiz && attempt) {
+        updateReviewButtons(quiz, attempt);
+      }
+      showOnlyScreen("cancel");
+      return;
+    }
+
+    if (attempt?.result) {
+      showResult(attempt.result, "Resultado carregado.");
+      if (quiz) {
+        updateReviewButtons(quiz, attempt);
+      }
+      return;
+    }
+
+    showOnlyScreen("result");
   });
 }
 teacherRefreshButton.addEventListener("click", openTeacherPanel);
@@ -196,8 +262,8 @@ if (homeHeaderButton) {
         title: "Ir para a home?",
         text: "Ao voltar para a home, este questionário será cancelado e você perderá o acesso a ele.",
         confirmLabel: "Sim, ir para a home",
-        onConfirm: () => {
-          cancelQuiz("Questionário cancelado ao voltar para a home.", { skipScreen: true });
+        onConfirm: async () => {
+          await cancelQuiz("Questionário bloqueado ao voltar para a home durante a avaliação.", { blockedByViolation: true, skipScreen: true });
           showHome();
         }
       });
@@ -221,12 +287,39 @@ if (profileCancelButton) {
 }
 
 if (userChip) {
-  userChip.addEventListener("click", () => {
+  userChip.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!userChipPopup) return;
+    const email = state.user?.email || "";
+    if (userChipPopupEmail) userChipPopupEmail.textContent = email || "E-mail não disponível";
+    userChipPopup.classList.toggle("hidden");
+  });
+}
+
+if (userChipPopupRename) {
+  userChipPopupRename.addEventListener("click", () => {
+    if (userChipPopup) userChipPopup.classList.add("hidden");
     openRenameProfileScreen();
   });
 }
+
+document.addEventListener("click", () => {
+  if (userChipPopup) userChipPopup.classList.add("hidden");
+});
+
+document.addEventListener("click", (event) => {
+  const reloadLink = event.target.closest(".reload-page-link");
+  if (!reloadLink) {
+    return;
+  }
+  event.preventDefault();
+  window.location.reload();
+});
 if (builderForm) {
   builderForm.addEventListener("submit", handleBuilderCreateQuiz);
+}
+if (teacherClassroomForm) {
+  teacherClassroomForm.addEventListener("submit", handleCreateClassroom);
 }
 
 document.querySelectorAll("form").forEach((form) => {
@@ -244,6 +337,17 @@ teacherPanelButton.addEventListener("click", async () => {
 
   await openTeacherPanel();
 });
+
+if (teacherClassroomsButton) {
+  teacherClassroomsButton.addEventListener("click", async () => {
+    if (!state.isTeacher) {
+      alert("Acesso negado às turmas.");
+      return;
+    }
+
+    await openTeacherClassroomsScreen();
+  });
+}
 
 if (teacherBuilderButton) {
   teacherBuilderButton.addEventListener("click", () => {
@@ -266,7 +370,7 @@ logoutButton.addEventListener("click", async () => {
       text: "Ao sair agora, este questionário será cancelado e você perderá o acesso a ele.",
       confirmLabel: "Sim, sair",
       onConfirm: async () => {
-        cancelQuiz("Questionário cancelado ao sair da plataforma.", { skipScreen: true });
+        await cancelQuiz("Questionário bloqueado ao sair da plataforma durante a avaliação.", { blockedByViolation: true, skipScreen: true });
         if (typeof window.firebaseSignOut === "function") {
           await window.firebaseSignOut();
         }
@@ -363,23 +467,456 @@ function normalizeNameSlug(name) {
     .replace(/\s+/g, "-") || "usuario";
 }
 
+function escapeHtml(str) {
+  if (str == null) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function getReloadPageLinkHtml() {
+  return '<a href="#" class="reload-page-link">(atualizar página)</a>';
+}
+
+function getBlockedReviewNoteHtml(baseMessage = "") {
+  const prefix = baseMessage ? `${escapeHtml(baseMessage)} ` : "";
+  return `${prefix}<span class="quiz-review-note">Resumo bloqueado no momento. ${getReloadPageLinkHtml()}</span>`;
+}
+
+function normalizeClassroomId(name) {
+  return String(name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
+}
+
+function renderProfileClassroomOptions(selectedId = "") {
+  if (!profileClassroomSelect) return;
+  const noClassMsg = document.getElementById("profile-no-classroom-message");
+  const saveBtn = document.getElementById("profile-submit-button");
+  const classGroup = document.getElementById("profile-classroom-group");
+
+  // Se for professor, esconde grupo de turma e remove required
+  if (state.isTeacher) {
+    if (classGroup) classGroup.style.display = "none";
+    if (profileClassroomSelect) profileClassroomSelect.required = false;
+    if (saveBtn) saveBtn.disabled = false;
+    return;
+  } else {
+    if (classGroup) classGroup.style.display = "";
+    if (profileClassroomSelect) profileClassroomSelect.required = true;
+  }
+
+  const options = ['<option value="">Selecione uma turma</option>'];
+  state.classrooms.forEach((classroom) => {
+    options.push(`<option value="${classroom.id}">${classroom.nome}</option>`);
+  });
+  profileClassroomSelect.innerHTML = options.join("");
+  profileClassroomSelect.value = selectedId || "";
+
+  if (state.classrooms.length === 0) {
+    profileClassroomSelect.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+    if (noClassMsg) {
+      noClassMsg.style.display = 'block';
+      noClassMsg.textContent = 'Nenhuma turma disponível. Aguarde o professor criar uma turma.';
+    }
+  } else {
+    profileClassroomSelect.disabled = false;
+    if (saveBtn) saveBtn.disabled = false;
+    if (noClassMsg) noClassMsg.style.display = 'none';
+  }
+}
+
+function renderTeacherClassrooms() {
+  if (!teacherClassroomsList) {
+    return;
+  }
+
+  if (!state.classrooms.length) {
+    teacherClassroomsList.innerHTML = "<p class=\"teacher-empty-state\">Nenhuma turma criada ainda.</p>";
+    return;
+  }
+
+  teacherClassroomsList.innerHTML = state.classrooms
+    .map((classroom) => `
+      <article class="teacher-classroom-manage-card">
+        <div class="teacher-classroom-manage-main">
+          <h3>${classroom.nome}</h3>
+          <p>ID: ${classroom.id}</p>
+          <div class="teacher-classroom-students teacher-classroom-dropzone" data-classroom-id="${classroom.id}">
+            <strong>Alunos</strong>
+            ${Array.isArray(state.classroomStudents[classroom.id]) && state.classroomStudents[classroom.id].length
+        ? `<div class="teacher-classroom-student-list">${state.classroomStudents[classroom.id]
+          .map((student) => `<span class="teacher-classroom-student-chip teacher-student-draggable" draggable="true" data-student-slug="${escapeHtml(student.slug || "")}" data-source-classroom-id="${classroom.id}">${escapeHtml(student.nome || student.email || student.slug || "Aluno sem nome")}</span>`)
+          .join("")}</div>`
+        : `<p class="teacher-classroom-student-empty">Nenhum aluno vinculado.</p>`}
+          </div>
+        </div>
+        <div class="teacher-classroom-manage-actions">
+          <button type="button" class="btn btn-danger-soft teacher-delete-classroom-btn" data-classroom-id="${classroom.id}">Excluir</button>
+        </div>
+      </article>
+    `)
+    .join("");
+
+  teacherClassroomsList.querySelectorAll(".teacher-delete-classroom-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const classroomId = button.dataset.classroomId;
+      if (!classroomId) {
+        return;
+      }
+
+      await deleteClassroom(classroomId);
+    });
+  });
+
+  bindTeacherClassroomDnD();
+}
+
+function bindTeacherClassroomDnD() {
+  if (!teacherClassroomsList || !state.isTeacher) {
+    return;
+  }
+
+  teacherClassroomsList.querySelectorAll(".teacher-student-draggable").forEach((chip) => {
+    chip.addEventListener("dragstart", (event) => {
+      const studentSlug = String(chip.dataset.studentSlug || "");
+      const sourceClassroomId = String(chip.dataset.sourceClassroomId || "");
+      if (!studentSlug || !sourceClassroomId || !event.dataTransfer) {
+        event.preventDefault();
+        return;
+      }
+
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", JSON.stringify({ studentSlug, sourceClassroomId }));
+      chip.classList.add("is-dragging");
+    });
+
+    chip.addEventListener("dragend", () => {
+      chip.classList.remove("is-dragging");
+      teacherClassroomsList.querySelectorAll(".teacher-classroom-dropzone").forEach((zone) => {
+        zone.classList.remove("is-drag-over");
+      });
+    });
+  });
+
+  teacherClassroomsList.querySelectorAll(".teacher-classroom-dropzone").forEach((zone) => {
+    zone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "move";
+      }
+      zone.classList.add("is-drag-over");
+    });
+
+    zone.addEventListener("dragleave", () => {
+      zone.classList.remove("is-drag-over");
+    });
+
+    zone.addEventListener("drop", async (event) => {
+      event.preventDefault();
+      zone.classList.remove("is-drag-over");
+
+      const targetClassroomId = String(zone.dataset.classroomId || "");
+      const payload = event.dataTransfer?.getData("text/plain") || "";
+      if (!payload || !targetClassroomId) {
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(payload);
+        await moveStudentToClassroom(String(parsed.studentSlug || ""), String(parsed.sourceClassroomId || ""), targetClassroomId);
+      } catch (error) {
+        console.error("Erro ao processar arrastar/soltar de aluno:", error);
+      }
+    });
+  });
+}
+
+async function moveStudentToClassroom(studentSlug, sourceClassroomId, targetClassroomId) {
+  if (!studentSlug || !sourceClassroomId || !targetClassroomId || sourceClassroomId === targetClassroomId) {
+    return;
+  }
+
+  const sourceStudents = Array.isArray(state.classroomStudents[sourceClassroomId])
+    ? [...state.classroomStudents[sourceClassroomId]]
+    : [];
+  const targetStudents = Array.isArray(state.classroomStudents[targetClassroomId])
+    ? [...state.classroomStudents[targetClassroomId]]
+    : [];
+
+  const studentIndex = sourceStudents.findIndex((student) => student.slug === studentSlug);
+  if (studentIndex < 0) {
+    return;
+  }
+
+  const student = sourceStudents[studentIndex];
+  const targetClassroom = state.classrooms.find((item) => item.id === targetClassroomId);
+  if (!targetClassroom) {
+    return;
+  }
+
+  const previousState = JSON.parse(JSON.stringify(state.classroomStudents || {}));
+  sourceStudents.splice(studentIndex, 1);
+  targetStudents.push(student);
+  targetStudents.sort((a, b) => {
+    const aName = a.nome || a.email || a.slug;
+    const bName = b.nome || b.email || b.slug;
+    return aName.localeCompare(bName, "pt-BR");
+  });
+
+  state.classroomStudents[sourceClassroomId] = sourceStudents;
+  state.classroomStudents[targetClassroomId] = targetStudents;
+  renderTeacherClassrooms();
+
+  if (!window.firebaseDB || !window.firebaseDoc || !window.firebaseSetDoc) {
+    return;
+  }
+
+  try {
+    const userRef = window.firebaseDoc(window.firebaseDB, "usuarios", student.slug);
+    await window.firebaseSetDoc(userRef, {
+      turmaId: targetClassroomId,
+      turmaNome: targetClassroom.nome,
+      atualizadoEmIso: new Date().toISOString(),
+      atualizadoPorUid: state.user?.uid || "",
+      atualizadoPorEmail: state.user?.email || ""
+    }, { merge: true });
+
+    if (student.uid) {
+      const userIndexRef = window.firebaseDoc(window.firebaseDB, "usuarios_index", student.uid);
+      await window.firebaseSetDoc(userIndexRef, {
+        turmaId: targetClassroomId,
+        turmaNome: targetClassroom.nome,
+        atualizadoEmIso: new Date().toISOString()
+      }, { merge: true });
+    }
+
+    if (teacherClassroomsMessage) {
+      const displayName = student.nome || student.email || student.slug;
+      teacherClassroomsMessage.textContent = `${displayName} movido(a) para ${targetClassroom.nome}.`;
+    }
+  } catch (error) {
+    state.classroomStudents = previousState;
+    renderTeacherClassrooms();
+    if (teacherClassroomsMessage) {
+      teacherClassroomsMessage.textContent = "Não foi possível mover o aluno para outra turma.";
+    }
+    console.error("Erro ao mover aluno de turma:", error);
+  }
+}
+
+async function refreshClassrooms() {
+  if (!window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs) {
+    state.classrooms = [];
+    renderProfileClassroomOptions();
+    renderTeacherClassrooms();
+    return;
+  }
+
+  try {
+    const classesRef = window.firebaseCollection(window.firebaseDB, "turmas");
+    const snap = await window.firebaseGetDocs(classesRef);
+    const next = [];
+
+    snap.forEach((docSnap) => {
+      const data = docSnap.data() || {};
+      if (data.ativo === false) {
+        return;
+      }
+      const nome = String(data.nome || "").trim();
+      if (!nome) {
+        return;
+      }
+      next.push({ id: docSnap.id, nome });
+    });
+
+    next.sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+    state.classrooms = next;
+    renderProfileClassroomOptions(state.classroomId);
+    renderTeacherClassrooms();
+  } catch (error) {
+    console.error("Erro ao carregar turmas:", error);
+  }
+}
+
+async function handleCreateClassroom(event) {
+  event.preventDefault();
+  if (!state.isTeacher) {
+    alert("Apenas professores podem criar turmas.");
+    return;
+  }
+
+  const classroomName = String(teacherClassroomNameInput?.value || "").trim();
+  if (!classroomName) {
+    return;
+  }
+
+  const classroomId = normalizeClassroomId(classroomName);
+  if (!classroomId) {
+    if (teacherClassroomsMessage) teacherClassroomsMessage.textContent = "Nome de turma inválido.";
+    return;
+  }
+
+  if (!window.firebaseDB || !window.firebaseDoc || !window.firebaseSetDoc) {
+    if (teacherClassroomsMessage) teacherClassroomsMessage.textContent = "Firebase indisponível para criar turma.";
+    return;
+  }
+
+  try {
+    const classRef = window.firebaseDoc(window.firebaseDB, "turmas", classroomId);
+    await window.firebaseSetDoc(classRef, {
+      nome: classroomName,
+      ativo: true,
+      criadoPorUid: state.user?.uid || "",
+      criadoPorEmail: state.user?.email || "",
+      atualizadoEmIso: new Date().toISOString()
+    }, { merge: true });
+
+    if (teacherClassroomForm) {
+      teacherClassroomForm.reset();
+    }
+    if (teacherClassroomsMessage) teacherClassroomsMessage.textContent = "Turma criada com sucesso.";
+    await refreshClassrooms();
+    await loadTeacherClassroomData();
+  } catch (error) {
+    if (teacherClassroomsMessage) teacherClassroomsMessage.textContent = "Erro ao criar turma.";
+    console.error("Erro ao criar turma:", error);
+  }
+}
+
+async function deleteClassroom(classroomId) {
+  if (!state.isTeacher || !window.firebaseDB || !window.firebaseDoc || !window.firebaseSetDoc) {
+    return;
+  }
+
+  const classroom = state.classrooms.find((item) => item.id === classroomId);
+  if (!classroom) {
+    return;
+  }
+
+  const ok = confirm(`Excluir a turma '${classroom.nome}'? Ela deixará de aparecer para novos alunos.`);
+  if (!ok) {
+    return;
+  }
+
+  try {
+    const classRef = window.firebaseDoc(window.firebaseDB, "turmas", classroomId);
+    await window.firebaseSetDoc(classRef, {
+      ativo: false,
+      atualizadoEmIso: new Date().toISOString(),
+      atualizadoPorUid: state.user?.uid || "",
+      atualizadoPorEmail: state.user?.email || ""
+    }, { merge: true });
+
+    if (teacherClassroomsMessage) {
+      teacherClassroomsMessage.textContent = "Turma excluída com sucesso.";
+    }
+    await refreshClassrooms();
+    await loadTeacherClassroomData();
+  } catch (error) {
+    if (teacherClassroomsMessage) {
+      teacherClassroomsMessage.textContent = "Erro ao excluir turma.";
+    }
+    console.error("Erro ao excluir turma:", error);
+  }
+}
+
+async function loadTeacherClassroomData() {
+  if (!teacherClassroomsList) {
+    return;
+  }
+
+  if (teacherClassroomsMessage && !teacherClassroomsMessage.textContent) {
+    teacherClassroomsMessage.textContent = "";
+  }
+
+  await refreshClassrooms();
+
+  state.classroomStudents = {};
+  if (!window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs) {
+    renderTeacherClassrooms();
+    return;
+  }
+
+  try {
+    const usersRef = window.firebaseCollection(window.firebaseDB, "usuarios");
+    const usersSnap = await window.firebaseGetDocs(usersRef);
+    const nextStudents = {};
+
+    usersSnap.forEach((docSnap) => {
+      const data = docSnap.data() || {};
+      const classroomId = String(data.turmaId || "").trim();
+      if (!classroomId) {
+        return;
+      }
+
+      if (!nextStudents[classroomId]) {
+        nextStudents[classroomId] = [];
+      }
+
+      nextStudents[classroomId].push({
+        slug: docSnap.id,
+        uid: String(data.ultimoUid || "").trim(),
+        nome: String(data.nome || "").trim(),
+        email: String(data.email || "").trim()
+      });
+    });
+
+    Object.keys(nextStudents).forEach((classroomId) => {
+      nextStudents[classroomId].sort((a, b) => {
+        const aName = a.nome || a.email || a.slug;
+        const bName = b.nome || b.email || b.slug;
+        return aName.localeCompare(bName, "pt-BR");
+      });
+    });
+
+    state.classroomStudents = nextStudents;
+  } catch (error) {
+    console.error("Erro ao carregar alunos por turma:", error);
+    if (teacherClassroomsMessage && !teacherClassroomsMessage.textContent) {
+      teacherClassroomsMessage.textContent = "Não foi possível carregar a lista de alunos das turmas.";
+    }
+  }
+
+  renderTeacherClassrooms();
+}
+
 function savePendingUnloadCancellation(payload) {
   localStorage.setItem(getPendingUnloadKey(), JSON.stringify(payload));
 }
 
-function consumePendingUnloadCancellation() {
+function readPendingUnloadCancellation() {
   const key = getPendingUnloadKey();
   const raw = localStorage.getItem(key);
   if (!raw) {
     return null;
   }
 
-  localStorage.removeItem(key);
   try {
     return JSON.parse(raw);
   } catch {
     return null;
   }
+}
+
+function clearPendingUnloadCancellation() {
+  localStorage.removeItem(getPendingUnloadKey());
+}
+
+function consumePendingUnloadCancellation() {
+  const pending = readPendingUnloadCancellation();
+  if (pending) {
+    clearPendingUnloadCancellation();
+  }
+  return pending;
 }
 
 function persistUnloadCancellation() {
@@ -391,15 +928,30 @@ function persistUnloadCancellation() {
   const cancelAt = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
   const reason = "Questionário cancelado ao recarregar ou fechar a página.";
   const answersSnapshot = cloneAnswersSnapshot();
-  const result = buildAttemptResult(quiz, answersSnapshot, cancelAt);
+  const cancelled = buildCancelledAttemptResult(quiz, answersSnapshot, cancelAt);
+  const result = cancelled.result;
+  const questionResults = cancelled.questionResults;
 
+  // Salva localmente
   saveStoredAttempt(quiz.id, {
     status: "cancelled",
     cancelReason: reason,
     blockedByViolation: false,
     at: cancelAt,
     result,
-    answers: answersSnapshot
+    answers: answersSnapshot,
+    questionResults
+  });
+  // Salva no Firestore para o painel do professor
+  saveCancelledAttemptToFirestore(quiz, {
+    reason,
+    blockedByViolation: false,
+    at: cancelAt,
+    result,
+    answers: answersSnapshot,
+    questionResults
+  }).catch((error) => {
+    console.error("Erro ao salvar cancelamento no descarregamento da página:", error);
   });
 
   savePendingUnloadCancellation({
@@ -410,12 +962,13 @@ function persistUnloadCancellation() {
     blockedByViolation: false,
     at: cancelAt,
     result,
-    answers: answersSnapshot
+    answers: answersSnapshot,
+    questionResults
   });
 }
 
-function flushPendingUnloadCancellation() {
-  const pending = consumePendingUnloadCancellation();
+async function flushPendingUnloadCancellation() {
+  const pending = readPendingUnloadCancellation();
   if (!pending) {
     return;
   }
@@ -426,14 +979,29 @@ function flushPendingUnloadCancellation() {
     title: pending.quizTitle || pending.quizId,
     questions: Array.from({ length: pending.questionsLength || 0 }, (_, index) => ({ id: `q${index + 1}` }))
   };
+  const rebuilt = buildCancelledAttemptResult(
+    quizLike,
+    pending.answers || {},
+    pending?.result?.date || pending.at || new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })
+  );
+  const normalizedResult = quiz ? rebuilt.result : (pending.result || rebuilt.result);
+  const normalizedQuestionResults = Array.isArray(pending.questionResults) && pending.questionResults.length
+    ? pending.questionResults
+    : rebuilt.questionResults;
 
-  saveCancelledAttemptToFirestore(quizLike, {
-    reason: pending.reason,
-    blockedByViolation: pending.blockedByViolation,
-    at: pending.at,
-    result: pending.result,
-    answers: pending.answers || {}
-  });
+  try {
+    await saveCancelledAttemptToFirestore(quizLike, {
+      reason: pending.reason,
+      blockedByViolation: pending.blockedByViolation,
+      at: pending.at,
+      result: normalizedResult,
+      answers: pending.answers || {},
+      questionResults: normalizedQuestionResults
+    });
+    clearPendingUnloadCancellation();
+  } catch (error) {
+    console.error("Erro ao reenviar cancelamento pendente:", error);
+  }
 }
 
 async function refreshQuizConfigs() {
@@ -451,6 +1019,7 @@ async function refreshQuizConfigs() {
       const data = docSnap.data() || {};
       nextMap[docSnap.id] = {
         allowStudentReview: Boolean(data.allowStudentReview),
+        allowStudentStart: Boolean(data.allowStudentStart),
         hidden: Boolean(data.hidden)
       };
     });
@@ -482,6 +1051,13 @@ async function refreshRetakeReleases() {
 
     const data = userSnap.data() || {};
     state.retakeReleases = data.liberacoes || {};
+    // Limpa tentativas locais se houver liberação para refazer
+    Object.keys(state.retakeReleases).forEach((quizId) => {
+      if (state.retakeReleases[quizId]) {
+        localStorage.removeItem(getStorageKey(quizId));
+        if (state.remoteAttemptsByQuiz) delete state.remoteAttemptsByQuiz[quizId];
+      }
+    });
     renderHome();
   } catch (error) {
     console.error("Erro ao carregar liberações de refazer:", error);
@@ -602,6 +1178,7 @@ function getAllQuizzes() {
       return {
         ...quiz,
         allowStudentReview: cfg.allowStudentReview ?? Boolean(quiz.allowStudentReview),
+        allowStudentStart: cfg.allowStudentStart ?? false,
         hidden: cfg.hidden ?? false
       };
     })
@@ -716,7 +1293,9 @@ function gradeQuizAttemptObfuscated(quiz, answersSnapshot, at) {
       selectedLabel: selectedOption ? String(selectedOption.label || "") : "",
       correctValue,
       correctLabel: correctOption ? String(correctOption.label || "") : "",
-      isCorrect
+      isCorrect,
+      // include options for review rendering
+      options: options.map(opt => ({ value: String(opt.value), label: String(opt.label || "") }))
     };
   });
 
@@ -861,6 +1440,26 @@ async function toggleQuizReview(quizId) {
   }
 }
 
+async function toggleQuizStart(quizId) {
+  if (!state.isTeacher) {
+    return;
+  }
+
+  const quiz = getAllQuizzes().find((item) => item.id === quizId);
+  if (!quiz) {
+    return;
+  }
+
+  try {
+    await setQuizConfig(quizId, { allowStudentStart: !Boolean(quiz.allowStudentStart), hidden: false });
+    await refreshQuizConfigs();
+    await refreshCustomQuizzes();
+  } catch (error) {
+    console.error("Erro ao atualizar liberação de início do quiz:", error);
+    alert("Não foi possível atualizar a liberação de início do quiz.");
+  }
+}
+
 async function removeQuiz(quizId) {
   if (!state.isTeacher) {
     alert("Apenas professores podem remover quizzes.");
@@ -959,6 +1558,10 @@ function openRenameProfileScreen() {
   if (profileCancelButton) profileCancelButton.classList.remove("hidden");
   profileMessage.textContent = "";
   profileNameInput.value = state.studentName || "";
+  if (profileClassroomSelect) {
+    renderProfileClassroomOptions(state.classroomId);
+    profileClassroomSelect.disabled = true;
+  }
 
   authScreen.classList.add("hidden");
   homeScreen.classList.add("hidden");
@@ -966,14 +1569,20 @@ function openRenameProfileScreen() {
   showOnlyScreen(null);
 }
 
-function showProfileScreen() {
+async function showProfileScreen() {
   state.isRenamingProfile = false;
   if (profileScreenTitle) profileScreenTitle.textContent = "Primeiro acesso";
   if (profileScreenSubtitle) profileScreenSubtitle.textContent = "Antes de continuar, informe o nome que será usado em todos os quizzes.";
   if (profileSubmitButton) profileSubmitButton.textContent = "Salvar e continuar";
   if (profileCancelButton) profileCancelButton.classList.add("hidden");
   profileMessage.textContent = "";
-  profileNameInput.value = "";
+  profileNameInput.value = state.studentName || "";
+  await refreshClassrooms();
+  if (profileClassroomSelect) {
+    profileClassroomSelect.disabled = false;
+    renderProfileClassroomOptions(state.classroomId);
+  }
+  // Mensagem específica é exibida no formulário quando não há turmas.
   authScreen.classList.add("hidden");
   homeScreen.classList.add("hidden");
   profileScreen.classList.remove("hidden");
@@ -991,6 +1600,13 @@ async function ensureUserProfile() {
     const cached = JSON.parse(cachedRaw);
     state.studentName = cached.name;
     state.profileSlug = cached.slug;
+    state.classroomId = cached.classroomId || "";
+    state.classroomName = cached.classroomName || "";
+    await refreshTeacherAccess();
+    if (!state.classroomId && !state.isTeacher) {
+      await showProfileScreen();
+      return;
+    }
     showAuthenticatedUI();
     return;
   }
@@ -1003,10 +1619,19 @@ async function ensureUserProfile() {
         const data = indexSnap.data();
         state.studentName = data.nome || "";
         state.profileSlug = data.slug || normalizeNameSlug(data.nome || state.user.displayName || state.user.email || "usuario");
+        state.classroomId = data.turmaId || "";
+        state.classroomName = data.turmaNome || "";
         localStorage.setItem(getProfileStorageKey(), JSON.stringify({
           name: state.studentName,
-          slug: state.profileSlug
+          slug: state.profileSlug,
+          classroomId: state.classroomId,
+          classroomName: state.classroomName
         }));
+        await refreshTeacherAccess();
+        if (!state.classroomId && !state.isTeacher) {
+          await showProfileScreen();
+          return;
+        }
         showAuthenticatedUI();
         return;
       }
@@ -1015,7 +1640,8 @@ async function ensureUserProfile() {
     }
   }
 
-  showProfileScreen();
+  await refreshTeacherAccess();
+  await showProfileScreen();
 }
 
 async function handleProfileSubmit(event) {
@@ -1025,6 +1651,14 @@ async function handleProfileSubmit(event) {
   const typedName = profileNameInput.value.trim();
   if (!typedName) {
     profileNameInput.focus();
+    return;
+  }
+
+  const selectedClassroomId = profileClassroomSelect ? String(profileClassroomSelect.value || "") : "";
+  // Professores não precisam selecionar turma
+  if (!state.isRenamingProfile && !selectedClassroomId && !state.isTeacher) {
+    profileMessage.textContent = "Selecione sua turma para continuar.";
+    if (profileClassroomSelect) profileClassroomSelect.focus();
     return;
   }
 
@@ -1064,8 +1698,18 @@ async function handleProfileSubmit(event) {
 
   state.studentName = typedName;
   state.profileSlug = slug;
+  if (!state.isRenamingProfile) {
+    state.classroomId = selectedClassroomId;
+    const selectedClassroom = state.classrooms.find((item) => item.id === selectedClassroomId);
+    state.classroomName = selectedClassroom?.nome || "";
+  }
 
-  localStorage.setItem(getProfileStorageKey(), JSON.stringify({ name: typedName, slug }));
+  localStorage.setItem(getProfileStorageKey(), JSON.stringify({
+    name: typedName,
+    slug,
+    classroomId: state.classroomId,
+    classroomName: state.classroomName
+  }));
 
   if (state.isRenamingProfile) {
     saveLastRenameDate();
@@ -1081,6 +1725,8 @@ async function handleProfileSubmit(event) {
         window.firebaseSetDoc(userFolderRef, {
           nome: typedName,
           slug,
+          turmaId: state.classroomId || "",
+          turmaNome: state.classroomName || "",
           atualizadoEmIso: new Date().toISOString(),
           ultimoUid: state.user.uid
         }, { merge: true }),
@@ -1088,12 +1734,16 @@ async function handleProfileSubmit(event) {
           uid: state.user.uid,
           email: state.user.email || "",
           nome: typedName,
+          turmaId: state.classroomId || "",
+          turmaNome: state.classroomName || "",
           criadoEmIso: new Date().toISOString()
         }, { merge: true }),
         window.firebaseSetDoc(indexRef, {
           uid: state.user.uid,
           nome: typedName,
           slug,
+          turmaId: state.classroomId || "",
+          turmaNome: state.classroomName || "",
           email: state.user.email || "",
           atualizadoEmIso: new Date().toISOString()
         }, { merge: true })
@@ -1114,6 +1764,9 @@ function showAuthenticatedUI() {
   authScreen.classList.add("hidden");
   profileScreen.classList.add("hidden");
   teacherScreen.classList.add("hidden");
+  if (teacherClassroomsScreen) {
+    teacherClassroomsScreen.classList.add("hidden");
+  }
   if (builderScreen) {
     builderScreen.classList.add("hidden");
   }
@@ -1123,24 +1776,30 @@ function showAuthenticatedUI() {
     homeHeaderButton.classList.remove("hidden");
   }
   teacherPanelButton.classList.add("hidden");
+  if (teacherClassroomsButton) {
+    teacherClassroomsButton.classList.add("hidden");
+  }
   if (teacherBuilderButton) {
     teacherBuilderButton.classList.add("hidden");
   }
   logoutButton.classList.remove("hidden");
 
   const display = state.studentName || state.user.displayName || state.user.email || "Usuário";
-  userChip.textContent = display;
+  userChip.textContent = state.classroomName ? `${display} - ${state.classroomName}` : display;
   if (studentNameDisplay) {
     studentNameDisplay.textContent = state.studentName || "-";
   }
 
   showOnlyScreen(null);
   renderHome();
-  flushPendingUnloadCancellation();
+  flushPendingUnloadCancellation().catch((error) => {
+    console.error("Erro ao processar cancelamento pendente:", error);
+  });
   refreshRemoteAttempts();
   refreshQuizConfigs();
   refreshRetakeReleases();
   refreshCustomQuizzes();
+  refreshClassrooms();
   refreshTeacherAccess();
 }
 
@@ -1148,6 +1807,9 @@ function showUnauthenticatedUI() {
   state.isTeacher = false;
   state.studentName = "";
   state.profileSlug = "";
+  state.classroomId = "";
+  state.classroomName = "";
+  state.classrooms = [];
   state.quizConfigs = {};
   state.remoteAttemptsByQuiz = {};
   state.remoteAttemptsLoaded = false;
@@ -1155,6 +1817,9 @@ function showUnauthenticatedUI() {
   authScreen.classList.remove("hidden");
   profileScreen.classList.add("hidden");
   teacherScreen.classList.add("hidden");
+  if (teacherClassroomsScreen) {
+    teacherClassroomsScreen.classList.add("hidden");
+  }
   if (builderScreen) {
     builderScreen.classList.add("hidden");
   }
@@ -1164,6 +1829,9 @@ function showUnauthenticatedUI() {
     homeHeaderButton.classList.add("hidden");
   }
   teacherPanelButton.classList.add("hidden");
+  if (teacherClassroomsButton) {
+    teacherClassroomsButton.classList.add("hidden");
+  }
   if (teacherBuilderButton) {
     teacherBuilderButton.classList.add("hidden");
   }
@@ -1174,6 +1842,9 @@ function showUnauthenticatedUI() {
 async function refreshTeacherAccess() {
   state.isTeacher = false;
   teacherPanelButton.classList.add("hidden");
+  if (teacherClassroomsButton) {
+    teacherClassroomsButton.classList.add("hidden");
+  }
   if (teacherBuilderButton) {
     teacherBuilderButton.classList.add("hidden");
   }
@@ -1192,6 +1863,9 @@ async function refreshTeacherAccess() {
 
     if (state.isTeacher) {
       teacherPanelButton.classList.remove("hidden");
+      if (teacherClassroomsButton) {
+        teacherClassroomsButton.classList.remove("hidden");
+      }
       if (teacherBuilderButton) {
         teacherBuilderButton.classList.remove("hidden");
       }
@@ -1245,10 +1919,36 @@ function getLatestAttemptsByQuiz(attempts) {
 
 async function releaseQuizForStudent(slug, quizId) {
   try {
-    await setRetakeReleaseForStudent(slug, quizId, true);
+    // Remove todas as tentativas do quiz do aluno no Firestore
+    if (window.firebaseDB && window.firebaseCollection && window.firebaseQuery && window.firebaseWhere && window.firebaseGetDocs && window.firebaseDeleteDoc) {
+      const attemptsRef = window.firebaseCollection(window.firebaseDB, "usuarios", slug, "tentativas");
+      const q = window.firebaseQuery(
+        attemptsRef,
+        window.firebaseWhere("quizId", "==", quizId)
+      );
+      const snap = await window.firebaseGetDocs(q);
+      const deletePromises = [];
+      snap.forEach((docSnap) => {
+        deletePromises.push(window.firebaseDeleteDoc(docSnap.ref));
+      });
+      await Promise.all(deletePromises);
+    }
+
+    // Remove local attempt para este quiz/aluno
+    if (state.user && state.profileSlug === slug) {
+      const storageKey = getStorageKey(quizId);
+      localStorage.removeItem(storageKey);
+      if (state.remoteAttemptsByQuiz) {
+        delete state.remoteAttemptsByQuiz[quizId];
+      }
+    }
+
+    // Remove liberação de retake
+    await setRetakeReleaseForStudent(slug, quizId, false);
+
     return true;
   } catch (error) {
-    console.error("Erro ao liberar quiz:", error);
+    console.error("Erro ao limpar tentativas do quiz:", error);
     return false;
   }
 }
@@ -1260,20 +1960,45 @@ async function loadLatestAttemptBySlugQuiz(slug, quizId) {
 
   try {
     const attemptsRef = window.firebaseCollection(window.firebaseDB, "usuarios", slug, "tentativas");
-    const q = window.firebaseQuery(attemptsRef, window.firebaseWhere("quizId", "==", quizId));
+    const q = window.firebaseQuery(
+      attemptsRef,
+      window.firebaseWhere("quizId", "==", quizId)
+    );
     const snap = await window.firebaseGetDocs(q);
+
     if (snap.empty) {
       return null;
     }
 
     let latest = null;
     snap.forEach((docSnap) => {
-      const data = docSnap.data() || {};
-      if (!latest || parsePtBrDate(data.data) >= parsePtBrDate(latest.data || "")) {
+      const data = docSnap.data();
+      if (!latest || parsePtBrDate(data.data || "") >= parsePtBrDate(latest.data || "")) {
         latest = data;
       }
     });
-    return latest;
+
+    if (!latest) {
+      return null;
+    }
+
+    return {
+      status: latest.status || "completed",
+      cancelReason: latest.motivoCancelamento || "",
+      blockedByViolation: Boolean(latest.bloqueadoPorViolacao),
+      result: {
+        quizId: latest.quizId,
+        quizTitle: latest.quizTitulo,
+        studentName: latest.nome,
+        earnedPoints: latest.pontos ?? 0,
+        maxPoints: latest.total ?? 0,
+        percent: latest.percentual ?? 0,
+        date: latest.data,
+        questionResults: latest.correcaoQuestoes || []
+      },
+      answers: latest.respostas || {},
+      questionResults: latest.correcaoQuestoes || []
+    };
   } catch (error) {
     console.error("Erro ao carregar tentativa do aluno:", error);
     return null;
@@ -1285,20 +2010,41 @@ function openTeacherAttemptReview(attempt) {
     return;
   }
 
-  const quiz = getAllQuizzes().find((item) => item.id === attempt.quizId);
-  if (!quiz || !reviewList || !reviewSummaryMeta) {
+  const quizId = String(attempt.quizId || attempt?.result?.quizId || "");
+  const quizTitle = String(attempt.quizTitulo || attempt?.result?.quizTitle || quizId || "Quiz removido");
+  const points = Number(attempt.pontos ?? attempt?.result?.earnedPoints ?? 0);
+  const total = Number(attempt.total ?? attempt?.result?.maxPoints ?? 0);
+  const percent = Number(attempt.percentual ?? attempt?.result?.percent ?? 0);
+  const storedQuestionResults = Array.isArray(attempt.correcaoQuestoes)
+    ? attempt.correcaoQuestoes
+    : (Array.isArray(attempt.questionResults)
+      ? attempt.questionResults
+      : (Array.isArray(attempt?.result?.questionResults) ? attempt.result.questionResults : []));
+
+  const quiz = getAllQuizzes().find((item) => item.id === quizId) || {
+    id: quizId || "quiz-removido",
+    title: quizTitle,
+    questions: storedQuestionResults.map((item, index) => ({
+      id: String(item?.questionId || `q${index + 1}`),
+      title: String(item?.questionTitle || `Questão ${index + 1}`),
+      options: Array.isArray(item?.options) ? item.options : []
+    }))
+  };
+
+  if (!reviewList || !reviewSummaryMeta) {
     alert("Não foi possível abrir o resumo deste quiz.");
     return;
   }
 
   state.reviewBackScreen = "teacher";
-  reviewSummaryMeta.textContent = `${attempt.pontos ?? 0} / ${attempt.total ?? quiz.questions.length} pontos • ${attempt.percentual ?? 0}% de acertos`;
+  reviewSummaryMeta.textContent = `${points} / ${total || quiz.questions.length} pontos • ${percent}% de acertos`;
 
-  const questionResults = Array.isArray(attempt.correcaoQuestoes) ? attempt.correcaoQuestoes : [];
+  const questionResults = storedQuestionResults;
   if (questionResults.length > 0) {
     reviewList.innerHTML = questionResults.map((item, index) => {
       const statusClass = item.isCorrect ? "review-card-correct" : (item.selectedValue ? "review-card-wrong" : "review-card-blank");
       const statusText = item.selectedValue ? (item.isCorrect ? "Acertou" : "Errou") : "Em branco";
+      const allOptionsHtml = renderReviewOptionsHtml(quiz, item, index);
 
       return `
         <article class="builder-question-card review-card ${statusClass}">
@@ -1306,9 +2052,11 @@ function openTeacherAttemptReview(attempt) {
             <h4>Questão ${index + 1}</h4>
             <span class="quiz-status ${item.isCorrect ? "available" : "cancelled"}">${statusText}</span>
           </div>
-          <p><strong>${item.questionTitle || `Questão ${index + 1}`}</strong></p>
-          <p>Resposta marcada: ${item.selectedLabel || "Nenhuma alternativa marcada"}</p>
-          <p>Resposta correta: ${item.correctLabel || "-"}</p>
+          <p class="review-question-title"><strong>${item.questionTitle || `Questão ${index + 1}`}</strong></p>
+          <div class="review-options-block">
+            <p class="review-options-title">Alternativas</p>
+            ${allOptionsHtml}
+          </div>
         </article>
       `;
     }).join("");
@@ -1329,6 +2077,7 @@ async function loadTeacherPanelData() {
   teacherUsersList.innerHTML = "";
 
   try {
+    await refreshClassrooms();
     const usersRef = window.firebaseCollection(window.firebaseDB, "usuarios");
     const usersSnap = await window.firebaseGetDocs(usersRef);
 
@@ -1337,10 +2086,11 @@ async function loadTeacherPanelData() {
       return;
     }
 
-    const cards = [];
+    const groups = {};
     for (const userDoc of usersSnap.docs) {
       const userData = userDoc.data();
       const slug = userDoc.id;
+      const turmaNome = String(userData.turmaNome || "").trim() || "Sem turma";
       const attemptsRef = window.firebaseCollection(window.firebaseDB, "usuarios", slug, "tentativas");
       const attemptsSnap = await window.firebaseGetDocs(attemptsRef);
 
@@ -1354,52 +2104,88 @@ async function loadTeacherPanelData() {
       const rowsHtml = latestAttempts.length
         ? latestAttempts.map((attempt) => `
             <tr>
-              <td>${attempt.quizTitulo || attempt.quizId}</td>
-              <td>${attempt.status === "cancelled" ? "-" : `${attempt.pontos ?? 0}/${attempt.total ?? 0}`}</td>
-              <td>${attempt.status === "cancelled" ? "-" : `${attempt.percentual ?? 0}%`}</td>
-              <td>${attempt.status === "cancelled"
-            ? (attempt.bloqueadoPorViolacao ? "Bloqueado por violação" : "Cancelado")
-            : "Concluído"}</td>
-              <td>${attempt.data || "-"}</td>
-              <td>
-                <button class="btn btn-ghost teacher-release-btn" data-slug="${slug}" data-quizid="${attempt.quizId}">
-                  Liberar
-                </button>
-                <button class="btn btn-ghost teacher-summary-btn" data-slug="${slug}" data-quizid="${attempt.quizId}">
-                  Resumo
-                </button>
+              <td class="teacher-cell-quiz">${attempt.quizTitulo || attempt.quizId}</td>
+              <td class="teacher-cell-score">${attempt.status === "cancelled" ? "-" : `${attempt.pontos ?? 0}/${attempt.total ?? 0}`}</td>
+              <td class="teacher-cell-percent">${attempt.status === "cancelled" ? "-" : `${attempt.percentual ?? 0}%`}</td>
+              <td class="teacher-status-cell">
+                <div class="teacher-status-stack">
+                  <span class="quiz-status ${attempt.status === "cancelled" ? "cancelled" : "completed"}">
+                    ${attempt.status === "cancelled"
+            ? ((attempt.blockedByViolation || attempt.bloqueadoPorViolacao) ? "Bloqueado por violação" : "Cancelado")
+            : "Concluído"}
+                  </span>
+                  ${attempt.status === "cancelled" && (attempt.motivoCancelamento || attempt.cancelReason)
+            ? `<small class="teacher-status-note ${(attempt.blockedByViolation || attempt.bloqueadoPorViolacao) ? "teacher-status-note-danger" : "teacher-status-note-muted"}">${attempt.motivoCancelamento || attempt.cancelReason}</small>`
+            : ""}
+                </div>
+              </td>
+              <td class="teacher-cell-date">${attempt.data || "-"}</td>
+              <td class="teacher-cell-actions">
+                <div class="teacher-row-actions">
+                  <button class="btn btn-ghost teacher-release-btn" data-slug="${slug}" data-quizid="${attempt.quizId}">
+                    Limpar
+                  </button>
+                  <button class="btn btn-ghost teacher-summary-btn" data-slug="${slug}" data-quizid="${attempt.quizId}">
+                    Resumo
+                  </button>
+                </div>
               </td>
             </tr>
           `).join("")
         : `<tr><td colspan="6">Sem tentativas registradas.</td></tr>`;
 
-      cards.push(`
+      const userCard = `
         <article class="teacher-user-card">
-          <h3>${userData.nome || slug}</h3>
-          <p>${userData.email || "Sem e-mail"}</p>
+          <div class="teacher-student-head">
+            <h3>${userData.nome || slug}</h3>
+            <p class="teacher-student-meta">${userData.email || "Sem e-mail"} • Turma: ${turmaNome}</p>
+          </div>
           <div class="teacher-table-wrap">
             <table class="teacher-table">
               <thead>
                 <tr>
-                  <th>Quiz</th>
-                  <th>Nota</th>
-                  <th>%</th>
-                  <th>Status</th>
-                  <th>Data</th>
-                  <th>Ação</th>
+                  <th class="teacher-col-quiz">Quiz</th>
+                  <th class="teacher-col-score">Nota</th>
+                  <th class="teacher-col-percent">%</th>
+                  <th class="teacher-col-status">Status</th>
+                  <th class="teacher-col-date">Data</th>
+                  <th class="teacher-col-actions">Ação</th>
                 </tr>
               </thead>
               <tbody>${rowsHtml}</tbody>
             </table>
           </div>
         </article>
-      `);
+      `;
+
+      if (!groups[turmaNome]) {
+        groups[turmaNome] = [];
+      }
+      groups[turmaNome].push(userCard);
     }
 
-    teacherUsersList.innerHTML = cards.join("");
+    const orderedTurmas = Object.keys(groups).sort((a, b) => {
+      if (a === "Sem turma") return 1;
+      if (b === "Sem turma") return -1;
+      return a.localeCompare(b, "pt-BR");
+    });
+
+    teacherUsersList.innerHTML = orderedTurmas
+      .map((turmaNome) => `
+        <section class="teacher-classroom-section">
+          <h3>Turma: ${turmaNome}</h3>
+          <div class="teacher-users-list">
+            ${groups[turmaNome].join("")}
+          </div>
+        </section>
+      `)
+      .join("");
+
     teacherMessage.textContent = "";
 
     teacherUsersList.querySelectorAll(".teacher-release-btn").forEach((button) => {
+      button.textContent = "Limpar";
+      button.title = "Excluir todas as tentativas deste quiz para este aluno";
       button.addEventListener("click", async () => {
         const slug = button.dataset.slug;
         const quizId = button.dataset.quizid;
@@ -1407,22 +2193,23 @@ async function loadTeacherPanelData() {
           return;
         }
 
-        const ok = confirm(`Liberar nova chance do quiz '${quizId}' para este aluno?`);
+        const ok = confirm(`Excluir todas as tentativas do quiz '${quizId}' para este aluno? Isso permitirá que ele comece do zero.`);
         if (!ok) {
           return;
         }
 
         button.disabled = true;
-        button.textContent = "Liberando...";
+        button.textContent = "Limpando...";
 
-        const released = await releaseQuizForStudent(slug, quizId);
-        if (released) {
-          button.textContent = "Liberado";
-          teacherMessage.textContent = "Nova chance liberada com sucesso.";
+        const cleaned = await releaseQuizForStudent(slug, quizId);
+        if (cleaned) {
+          button.textContent = "Limpo";
+          teacherMessage.textContent = "Tentativas removidas com sucesso.";
+          await loadTeacherPanelData();
         } else {
           button.disabled = false;
-          button.textContent = "Liberar";
-          teacherMessage.textContent = "Erro ao liberar nova chance.";
+          button.textContent = "Limpar";
+          teacherMessage.textContent = "Erro ao limpar tentativas.";
         }
       });
     });
@@ -1458,8 +2245,26 @@ async function openTeacherPanel() {
 
   showOnlyScreen(null);
   homeScreen.classList.add("hidden");
+  if (teacherClassroomsScreen) {
+    teacherClassroomsScreen.classList.add("hidden");
+  }
   teacherScreen.classList.remove("hidden");
   await loadTeacherPanelData();
+}
+
+async function openTeacherClassroomsScreen() {
+  if (!state.isTeacher) {
+    alert("Acesso negado às turmas.");
+    return;
+  }
+
+  showOnlyScreen(null);
+  homeScreen.classList.add("hidden");
+  teacherScreen.classList.add("hidden");
+  if (teacherClassroomsScreen) {
+    teacherClassroomsScreen.classList.remove("hidden");
+  }
+  await loadTeacherClassroomData();
 }
 
 function getBuilderQuestionCards() {
@@ -1470,11 +2275,17 @@ function addBuilderOptionRow(optionsEl, value = "", isCorrect = false) {
   const row = document.createElement("div");
   row.className = "builder-option-row";
   row.innerHTML = `
-    <label>
-      <input type="radio" name="" ${isCorrect ? "checked" : ""} /> Correta
+    <label class="builder-correct-toggle">
+      <input type="radio" name="" ${isCorrect ? "checked" : ""} />
+      <span>Correta</span>
     </label>
     <input type="text" placeholder="Texto da alternativa" value="${value.replace(/"/g, "&quot;")}" required />
-    <button type="button" class="btn btn-ghost">Remover</button>
+    <button type="button" class="builder-remove-option" title="Remover alternativa" aria-label="Remover alternativa">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M9 3v1H4v2h16V4h-5V3H9z" fill="currentColor" />
+        <path d="M6 7l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14H6z" fill="currentColor" />
+      </svg>
+    </button>
   `;
 
   const removeButton = row.querySelector("button");
@@ -1506,7 +2317,12 @@ function addBuilderQuestionCard(seed = {}) {
   card.innerHTML = `
     <div class="builder-question-head">
       <h4>Questão</h4>
-      <button type="button" class="btn builder-remove-question">Remover questão</button>
+      <button type="button" class="builder-remove-question" title="Remover questão" aria-label="Remover questão">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M9 3v1H4v2h16V4h-5V3H9z" fill="currentColor" />
+          <path d="M6 7l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14H6z" fill="currentColor" />
+        </svg>
+      </button>
     </div>
     <input type="text" class="builder-question-title" placeholder="Enunciado da questão" value="${(seed.title || "").replace(/"/g, "&quot;")}" required />
     <input type="text" class="builder-question-description" placeholder="Descrição (opcional)" value="${(seed.description || "").replace(/"/g, "&quot;")}" />
@@ -1530,7 +2346,7 @@ function addBuilderQuestionCard(seed = {}) {
       </label>
     </div>
     <div class="builder-options"></div>
-    <button type="button" class="btn btn-ghost builder-add-option">Adicionar alternativa</button>
+    <button type="button" class="btn builder-add-option btn-circle-add" title="Adicionar alternativa" aria-label="Adicionar alternativa">+</button>
   `;
 
   const removeQuestionButton = card.querySelector(".builder-remove-question");
@@ -1546,7 +2362,7 @@ function addBuilderQuestionCard(seed = {}) {
 
   const seedOptions = Array.isArray(seed.options) && seed.options.length >= 2
     ? seed.options
-    : [{ label: "" }, { label: "" }];
+    : [{ label: "" }, { label: "" }, { label: "" }, { label: "" }];
 
   seedOptions.forEach((option) => addBuilderOptionRow(optionsEl, option.label || "", option.value === seed.correctAnswer));
 
@@ -1671,6 +2487,9 @@ function openBuilderScreen(shouldReset = true) {
   if (teacherScreen) {
     teacherScreen.classList.add("hidden");
   }
+  if (teacherClassroomsScreen) {
+    teacherClassroomsScreen.classList.add("hidden");
+  }
   if (homeScreen) {
     homeScreen.classList.add("hidden");
   }
@@ -1790,16 +2609,18 @@ function getStoredAttempt(quizId) {
 }
 
 function getKnownAttempt(quizId) {
-  const localAttempt = getStoredAttempt(quizId);
-  if (localAttempt) {
-    return localAttempt;
-  }
-
+  // Sempre prioriza o estado remoto, se carregado
   if (state.remoteAttemptsLoaded) {
-    return state.remoteAttemptsByQuiz[quizId] || null;
+    // Se não existe tentativa remota, remove localStorage para garantir sincronização
+    if (!state.remoteAttemptsByQuiz[quizId]) {
+      localStorage.removeItem(getStorageKey(quizId));
+      return null;
+    }
+    return state.remoteAttemptsByQuiz[quizId];
   }
-
-  return null;
+  // Se não carregou remoto ainda, usa local
+  const localAttempt = getStoredAttempt(quizId);
+  return localAttempt || null;
 }
 
 function saveStoredAttempt(quizId, payload) {
@@ -1830,12 +2651,200 @@ function buildAttemptResult(quiz, answersSnapshot = cloneAnswersSnapshot(), at =
   };
 }
 
+function buildCancelledAttemptResult(quiz, answersSnapshot = cloneAnswersSnapshot(), at = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })) {
+  const sourceQuestions = Array.isArray(state.activeQuestions) && state.activeQuestions.length
+    ? state.activeQuestions
+    : (Array.isArray(quiz?.questions) ? quiz.questions : []);
+
+  const questionResults = buildCancelledQuestionResults(quiz, answersSnapshot);
+  const pointsByQuestionId = {};
+  let maxPoints = 0;
+
+  sourceQuestions.forEach((question, index) => {
+    const questionId = String(question?.id || `q${index + 1}`);
+    const points = Number(question?.points || 1);
+    const normalizedPoints = Number.isFinite(points) && points > 0 ? points : 1;
+    pointsByQuestionId[questionId] = normalizedPoints;
+    maxPoints += normalizedPoints;
+  });
+
+  const earnedPoints = questionResults.reduce((sum, item) => {
+    if (!item?.isCorrect) {
+      return sum;
+    }
+    const questionPoints = Number(pointsByQuestionId[String(item.questionId || "")] || 1);
+    return sum + (Number.isFinite(questionPoints) && questionPoints > 0 ? questionPoints : 1);
+  }, 0);
+
+  const percent = maxPoints > 0 ? Math.round((earnedPoints / maxPoints) * 100) : 0;
+
+  return {
+    result: {
+      quizId: quiz?.id,
+      quizTitle: quiz?.title,
+      studentName: state.studentName,
+      earnedPoints,
+      maxPoints,
+      percent,
+      date: at,
+      questionResults
+    },
+    questionResults
+  };
+}
+
+function buildCancelledQuestionResults(quiz, answersSnapshot = cloneAnswersSnapshot()) {
+  const sourceQuestions = Array.isArray(state.activeQuestions) && state.activeQuestions.length
+    ? state.activeQuestions
+    : (Array.isArray(quiz?.questions) ? quiz.questions : []);
+
+  return sourceQuestions.map((question, index) => {
+    const questionId = String(question?.id || `q${index + 1}`);
+    const selectedValue = String(answersSnapshot?.[questionId] || "");
+    const options = Array.isArray(question?.options) ? question.options : [];
+    const selectedOption = options.find((option) => String(option?.value || "") === selectedValue);
+    const correctValue = resolveQuestionCorrectValue(quiz?.id, question, index);
+    const correctOption = options.find((option) => String(option?.value || "") === correctValue);
+
+    return {
+      questionId,
+      questionTitle: question?.title || `Questão ${index + 1}`,
+      selectedValue,
+      selectedLabel: selectedOption ? String(selectedOption.label || "") : "",
+      correctValue,
+      correctLabel: correctOption ? String(correctOption.label || "") : "",
+      isCorrect: Boolean(selectedValue) && Boolean(correctValue) && selectedValue === correctValue,
+      options: options.map((option) => ({
+        value: String(option?.value || ""),
+        label: String(option?.label || "")
+      }))
+    };
+  });
+}
+
 function getAttemptForSelectedQuiz() {
   const quiz = getSelectedQuiz();
   if (!quiz) {
     return null;
   }
   return getKnownAttempt(quiz.id);
+}
+
+async function syncLatestAttemptForQuiz(quizId) {
+  if (!quizId) {
+    return null;
+  }
+
+  const remoteAttempt = await getRemoteAttemptForQuiz(quizId);
+  if (remoteAttempt) {
+    saveStoredAttempt(quizId, remoteAttempt);
+    return remoteAttempt;
+  }
+
+  return getKnownAttempt(quizId);
+}
+
+function resolveReviewOptionLabel(quiz, item, index, value) {
+  const normalizedValue = String(value || "");
+  if (!normalizedValue) {
+    return "";
+  }
+
+  const itemOptions = Array.isArray(item?.options) ? item.options : [];
+  const optionFromItem = itemOptions.find((option) => String(option?.value || "") === normalizedValue);
+  if (optionFromItem?.label) {
+    return String(optionFromItem.label);
+  }
+
+  const byId = item?.questionId
+    ? (quiz?.questions || []).find((question) => String(question?.id || "") === String(item.questionId))
+    : null;
+  const byIndex = (quiz?.questions || [])[index];
+  const question = byId || byIndex;
+  const questionOptions = Array.isArray(question?.options) ? question.options : [];
+  const optionFromQuestion = questionOptions.find((option) => String(option?.value || "") === normalizedValue);
+  if (optionFromQuestion?.label) {
+    return String(optionFromQuestion.label);
+  }
+
+  return "";
+}
+
+function getReviewOptionsForQuestion(quiz, item, index) {
+  const itemOptions = Array.isArray(item?.options)
+    ? item.options
+      .map((option) => {
+        if (!option) {
+          return null;
+        }
+        return {
+          value: String(option.value || ""),
+          label: String(option.label || "")
+        };
+      })
+      .filter((option) => option && option.value && option.label)
+    : [];
+
+  if (itemOptions.length > 0) {
+    return itemOptions;
+  }
+
+  const byId = item?.questionId
+    ? (quiz?.questions || []).find((question) => String(question?.id || "") === String(item.questionId))
+    : null;
+  const byIndex = (quiz?.questions || [])[index];
+  const question = byId || byIndex;
+  const questionOptions = Array.isArray(question?.options) ? question.options : [];
+
+  return questionOptions
+    .map((option) => {
+      if (!option) {
+        return null;
+      }
+      return {
+        value: String(option.value || ""),
+        label: String(option.label || "")
+      };
+    })
+    .filter((option) => option && option.value && option.label);
+}
+
+function renderReviewOptionsHtml(quiz, item, index) {
+  const options = getReviewOptionsForQuestion(quiz, item, index);
+  if (!options.length) {
+    return '<p class="review-options-empty">Alternativas não disponíveis neste registro.</p>';
+  }
+
+  const selectedValue = String(item?.selectedValue || "");
+  const correctValue = String(item?.correctValue || "");
+
+  return `
+    <ul class="review-options-list">
+      ${options.map((option) => {
+    const isSelected = selectedValue && option.value === selectedValue;
+    const isCorrect = correctValue && option.value === correctValue;
+    const classes = ["review-option-item"];
+    if (isSelected) classes.push("is-selected");
+    if (isCorrect) classes.push("is-correct");
+    const optionCode = String(option.value || "").trim().toUpperCase();
+
+    const badges = [
+      isSelected ? '<span class="review-option-badge badge-selected">Marcada</span>' : "",
+      isCorrect ? '<span class="review-option-badge badge-correct">Correta</span>' : ""
+    ].join("");
+
+    return `
+          <li class="${classes.join(" ")}">
+            <span class="review-option-main">
+              ${optionCode ? `<span class="review-option-code">${escapeHtml(optionCode)})</span>` : ""}
+              <span class="review-option-label">${escapeHtml(option.label)}</span>
+            </span>
+            <span class="review-option-badges">${badges}</span>
+          </li>
+        `;
+  }).join("")}
+    </ul>
+  `;
 }
 
 function updateReviewButtons(quiz, attempt) {
@@ -1865,6 +2874,7 @@ function openReviewScreen(backScreen = "result") {
     reviewList.innerHTML = questionResults.map((item, index) => {
       const statusClass = item.isCorrect ? "review-card-correct" : (item.selectedValue ? "review-card-wrong" : "review-card-blank");
       const statusText = item.selectedValue ? (item.isCorrect ? "Acertou" : "Errou") : "Em branco";
+      const allOptionsHtml = renderReviewOptionsHtml(quiz, item, index);
 
       return `
         <article class="builder-question-card review-card ${statusClass}">
@@ -1872,9 +2882,11 @@ function openReviewScreen(backScreen = "result") {
             <h4>Questão ${index + 1}</h4>
             <span class="quiz-status ${item.isCorrect ? "available" : "cancelled"}">${statusText}</span>
           </div>
-          <p><strong>${item.questionTitle || `Questão ${index + 1}`}</strong></p>
-          <p>Resposta marcada: ${item.selectedLabel || "Nenhuma alternativa marcada"}</p>
-          <p>Resposta correta: ${item.correctLabel || "-"}</p>
+          <p class="review-question-title"><strong>${item.questionTitle || `Questão ${index + 1}`}</strong></p>
+          <div class="review-options-block">
+            <p class="review-options-title">Alternativas</p>
+            ${allOptionsHtml}
+          </div>
         </article>
       `;
     }).join("");
@@ -1953,18 +2965,6 @@ function renderHome() {
     return data.includes(filterText);
   });
 
-  const total = allQuizzes.length;
-  const completed = allQuizzes.filter((quiz) => getKnownAttempt(quiz.id)?.status === "completed").length;
-  const cancelled = allQuizzes.filter((quiz) => getKnownAttempt(quiz.id)?.status === "cancelled").length;
-  const available = total - completed - cancelled;
-
-  statsGrid.innerHTML = `
-    <article class="stat-card"><h3>${total}</h3><p>Total de quizzes</p></article>
-    <article class="stat-card"><h3>${completed}</h3><p>Concluídos</p></article>
-    <article class="stat-card"><h3>${cancelled}</h3><p>Cancelados</p></article>
-    <article class="stat-card"><h3>${available}</h3><p>Disponíveis</p></article>
-  `;
-
   if (list.length === 0) {
     quizGrid.innerHTML = `<article class="card"><p>Nenhum quiz encontrado.</p></article>`;
     return;
@@ -1972,8 +2972,17 @@ function renderHome() {
 
   quizGrid.innerHTML = "";
   list.forEach((quiz) => {
-    const attempt = getKnownAttempt(quiz.id);
-    const status = attempt?.status || "available";
+    let attempt = getKnownAttempt(quiz.id);
+    // Se o professor liberou nova tentativa, remove status cancelado/completed
+    if (isRetakeReleased(quiz.id)) {
+      // Remove do localStorage e do estado
+      localStorage.removeItem(getStorageKey(quiz.id));
+      if (state.remoteAttemptsByQuiz) delete state.remoteAttemptsByQuiz[quiz.id];
+      attempt = null;
+    }
+    const canOpenQuiz = state.isTeacher || Boolean(attempt) || Boolean(quiz.allowStudentStart) || isRetakeReleased(quiz.id);
+    const mainButtonLabel = attempt ? "Ver detalhes" : (canOpenQuiz ? "Abrir quiz" : "Início bloqueado");
+    const status = attempt?.status || (isRetakeReleased(quiz.id) ? "available" : "available");
     const statusLabel =
       status === "completed" ? "Concluído" :
         status === "cancelled" ? "Cancelado" :
@@ -1991,41 +3000,77 @@ function renderHome() {
         <li>Questões: ${quiz.questions.length}</li>
       </ul>
       <div class="quiz-card-actions">
-        <button class="btn btn-primary btn-sm" data-quiz="${quiz.id}">
-          ${attempt ? "Ver detalhes" : "Abrir quiz"}
+        <button class="btn btn-primary btn-sm ${canOpenQuiz ? "" : "btn-start-blocked"}" data-quiz="${quiz.id}" title="${canOpenQuiz ? "" : "Atualizar"}">
+          ${mainButtonLabel}
         </button>
         ${attempt?.result ? (quiz.allowStudentReview ? `<button class="btn btn-ghost btn-sm" data-quick-review="${quiz.id}">Resumo</button>` : `<button class="btn btn-ghost btn-sm" disabled title="Resumo bloqueado no momento">Resumo</button>`) : ""}
+        ${state.isTeacher ? `<button class="btn btn-ghost btn-sm" data-toggle-start="${quiz.id}">${quiz.allowStudentStart ? "Bloquear início" : "Liberar início"}</button>` : ""}
         ${state.isTeacher ? `<button class="btn btn-ghost btn-sm" data-toggle-review="${quiz.id}">${quiz.allowStudentReview ? "Bloquear resumo" : "Liberar resumo"}</button>` : ""}
         ${state.isTeacher ? `
-          <div class="icon-group">
-            <button class="btn btn-ghost btn-sm btn-icon" data-edit-quiz="${quiz.id}" title="Editar quiz" aria-label="Editar quiz">
+          <div class="quiz-card-manage-actions">
+            <button class="btn btn-ghost btn-sm" data-edit-quiz="${quiz.id}" title="Editar quiz" aria-label="Editar quiz">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z" fill="currentColor" />
                 <path d="M20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" fill="currentColor" />
               </svg>
+              Editar
             </button>
-            <button class="btn btn-danger-soft btn-sm btn-icon" data-remove-quiz="${quiz.id}" title="Remover quiz" aria-label="Remover quiz">
+            <button class="btn btn-danger-soft btn-sm" data-remove-quiz="${quiz.id}" title="Excluir quiz" aria-label="Excluir quiz">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <path d="M9 3v1H4v2h16V4h-5V3H9z" fill="currentColor" />
                 <path d="M6 7l1 14a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-14H6z" fill="currentColor" />
               </svg>
+              Excluir
             </button>
           </div>
         ` : ""}
       </div>
-      ${attempt && !quiz.allowStudentReview ? `<p class="quiz-review-note">Resumo bloqueado no momento.</p>` : ""}
+      ${!state.isTeacher && !attempt && !quiz.allowStudentStart ? `<p class="quiz-review-note">Início bloqueado no momento. Aguarde o professor liberar este quiz.</p>` : ""}
+      ${attempt && !quiz.allowStudentReview ? `<p class="quiz-review-note">Resumo bloqueado no momento. ${getReloadPageLinkHtml()}</p>` : ""}
     `;
-
-    const button = card.querySelector("button[data-quiz]");
-    button.addEventListener("click", async () => {
-      await openQuiz(quiz.id);
-    });
 
     const quickReviewButton = card.querySelector("button[data-quick-review]");
     if (quickReviewButton) {
-      quickReviewButton.addEventListener("click", () => {
+      quickReviewButton.addEventListener("click", async () => {
         state.selectedQuizId = quiz.id;
-        openReviewScreen("result");
+        const syncedAttempt = await syncLatestAttemptForQuiz(quiz.id);
+        if (!syncedAttempt?.result) {
+          return;
+        }
+        openReviewScreen("home");
+      });
+    }
+
+    const mainButton = card.querySelector('button[data-quiz]');
+    if (mainButton) {
+      if (!canOpenQuiz && !attempt) {
+        mainButton.addEventListener("mouseenter", () => {
+          mainButton.textContent = "Atualizar";
+        });
+        mainButton.addEventListener("mouseleave", () => {
+          mainButton.textContent = "Início bloqueado";
+        });
+      }
+
+      mainButton.addEventListener('click', async () => {
+        if (!canOpenQuiz && !attempt) {
+          window.location.reload();
+          return;
+        }
+
+        if (attempt) {
+          // Show result screen for this attempt
+          state.selectedQuizId = quiz.id;
+          const syncedAttempt = await syncLatestAttemptForQuiz(quiz.id);
+          if (!syncedAttempt?.result) {
+            return;
+          }
+          showResult(syncedAttempt.result, "Resultado carregado.");
+          updateReviewButtons(quiz, syncedAttempt);
+          showOnlyScreen("result");
+        } else {
+          await openQuiz(quiz.id);
+        }
       });
     }
 
@@ -2047,6 +3092,13 @@ function renderHome() {
     if (toggleReviewButton) {
       toggleReviewButton.addEventListener("click", async () => {
         await toggleQuizReview(quiz.id);
+      });
+    }
+
+    const toggleStartButton = card.querySelector("button[data-toggle-start]");
+    if (toggleStartButton) {
+      toggleStartButton.addEventListener("click", async () => {
+        await toggleQuizStart(quiz.id);
       });
     }
 
@@ -2129,6 +3181,7 @@ async function openQuiz(quizId) {
   }
 
   const retakeReleased = isRetakeReleased(quizId);
+  const isStartAllowed = state.isTeacher || Boolean(quiz.allowStudentStart);
 
   if (!retakeReleased && attempt?.status === "completed") {
     resultAlreadyCompleted.classList.remove("hidden");
@@ -2138,8 +3191,12 @@ async function openQuiz(quizId) {
   }
 
   if (!retakeReleased && attempt?.status === "cancelled") {
-    const blockedMsg = !quiz.allowStudentReview ? "\nResumo bloqueado no momento." : "";
-    cancelMessage.textContent = `${attempt.cancelReason || "Questionário cancelado por violação de regras."}${blockedMsg}`;
+    const base = attempt.cancelReason || "Questionário cancelado por violação de regras.";
+    if (!quiz.allowStudentReview) {
+      cancelMessage.innerHTML = getBlockedReviewNoteHtml(base);
+    } else {
+      cancelMessage.textContent = base;
+    }
     showOnlyScreen("cancel");
     updateReviewButtons(quiz, attempt);
     return;
@@ -2147,23 +3204,42 @@ async function openQuiz(quizId) {
 
   selectedQuizTitle.textContent = quiz.title;
   selectedQuizDescription.textContent = quiz.description;
+  const hasTimedQuestion = quiz.questions.some((question) => Number(question.timer || 0) > 0);
   if (studentNameDisplay) {
     studentNameDisplay.textContent = state.studentName || "-";
   }
-  selectedQuizMeta.innerHTML = `
-    <li>Duração estimada: ${quiz.duration}</li>
-    <li>Total de questões: ${quiz.questions.length}</li>
-  `;
+  selectedQuizMeta.innerHTML =
+    `<li>Duração estimada: ${quiz.duration}</li>` +
+    `<li>Total de questões: ${quiz.questions.length}</li>`;
 
-  const hasTimedQuestion = quiz.questions.some((question) => Number(question.timer || 0) > 0);
+  if (timedWarningDisplay) {
+    if (hasTimedQuestion) {
+      timedWarningDisplay.textContent = "⏱ Atenção: este quiz possui questões com tempo limite.";
+      timedWarningDisplay.classList.remove("hidden");
+    } else {
+      timedWarningDisplay.classList.add("hidden");
+    }
+  }
+
   if (startRulesList) {
-    startRulesList.innerHTML = `
-      <li>Não é possível voltar para questões anteriores.</li>
-      <li>As questões e alternativas são embaralhadas.</li>
-      <li>${hasTimedQuestion ? "Este quiz possui questões com tempo limite." : "Este quiz não possui tempo por questão."}</li>
-      <li>Não recarregue a página e não troque de tela; isso cancela a avaliação.</li>
-      <li>Ao cancelar o quiz, você perde o acesso à tentativa.</li>
-    `;
+    startRulesList.innerHTML =
+      `<li>Não é possível voltar para questões anteriores.</li>` +
+      `<li>As questões e alternativas são embaralhadas.</li>` +
+      `<li>Não recarregue a página e não troque de tela; isso cancela a avaliação.</li>` +
+      `<li>Ao cancelar o quiz, você perde o acesso à tentativa.</li>` +
+      (isStartAllowed ? "" : "<li><strong>Início bloqueado pelo professor no momento.</strong></li>");
+  }
+
+  if (startQuizButton) {
+    startQuizButton.disabled = !isStartAllowed;
+    startQuizButton.textContent = isStartAllowed ? "Iniciar questionário" : "Início bloqueado";
+  }
+  if (startReloadButton) {
+    if (isStartAllowed) {
+      startReloadButton.classList.add("hidden");
+    } else {
+      startReloadButton.classList.remove("hidden");
+    }
   }
 
   showOnlyScreen("start");
@@ -2173,6 +3249,9 @@ function showHome() {
   clearSessionState();
   showOnlyScreen(null);
   teacherScreen.classList.add("hidden");
+  if (teacherClassroomsScreen) {
+    teacherClassroomsScreen.classList.add("hidden");
+  }
   if (builderScreen) {
     builderScreen.classList.add("hidden");
   }
@@ -2334,10 +3413,8 @@ function handleQuestionTimerExpired(question) {
 
   const notice = document.createElement("div");
   notice.className = "question-timeout-notice";
-  notice.innerHTML = `
-    <p>${hasSelectedAnswer ? "O tempo desta questão acabou. Sua resposta foi registrada." : "O tempo desta questão acabou. Sua resposta não foi registrada."}</p>
-    <button type="button" class="btn btn-primary" id="question-timeout-next">Ir para a próxima questão</button>
-  `;
+  notice.innerHTML = `<p>${hasSelectedAnswer ? "O tempo desta questão acabou. Sua resposta foi registrada." : "O tempo desta questão acabou. Sua resposta não foi registrada."}</p><button type="button" class="btn btn-primary" id="question-timeout-next">Ir para a próxima questão</button>`;
+  `< p > ${hasSelectedAnswer ? "O tempo desta questão acabou. Sua resposta foi registrada." : "O tempo desta questão acabou. Sua resposta não foi registrada."}</p > <button type="button" class="btn btn-primary" id="question-timeout-next">Ir para a próxima questão</button>`;
   questionInfoArea.innerHTML = "";
   questionInfoArea.appendChild(notice);
 
@@ -2359,14 +3436,14 @@ function renderQuestionTimer(question) {
   let timeLeft = question.timer;
   const timerBox = document.createElement("div");
   timerBox.className = "question-timer";
-  timerBox.innerHTML = `<span>Tempo restante</span><strong>${timeLeft}s</strong>`;
+  timerBox.innerHTML = `<span>Tempo restante</span> <strong>${timeLeft}s</strong>`;
   questionInfoArea.appendChild(timerBox);
 
   window.questionTimerInterval = setInterval(() => {
     timeLeft -= 1;
     const strong = timerBox.querySelector("strong");
     if (strong) {
-      strong.textContent = `${Math.max(0, timeLeft)}s`;
+      strong.textContent = `${Math.max(0, timeLeft)} s`;
     }
 
     if (timeLeft <= 0) {
@@ -2381,6 +3458,11 @@ async function handleStartQuiz(event) {
   event.preventDefault();
   const quiz = getSelectedQuiz();
   if (!quiz) {
+    return;
+  }
+
+  if (!state.isTeacher && !quiz.allowStudentStart) {
+    alert("Este quiz está bloqueado para início no momento. Aguarde o professor liberar.");
     return;
   }
 
@@ -2419,7 +3501,7 @@ function renderQuestion() {
     return;
   }
 
-  progress.textContent = `Questão ${state.currentQuestionIndex + 1} de ${activeQuestions.length}`;
+  progress.textContent = `Questão ${state.currentQuestionIndex + 1} de ${activeQuestions.length} `;
   questionTitle.textContent = question.title;
   questionDescription.textContent = question.description || "";
   questionForm.innerHTML = "";
@@ -2427,7 +3509,7 @@ function renderQuestion() {
 
   questionForm.classList.add("masked");
   question.options.forEach((option) => {
-    const id = `${question.id}-${option.value}`;
+    const id = `${question.id} -${option.value} `;
     const label = document.createElement("label");
     label.className = "answer-option";
     label.setAttribute("for", id);
@@ -2459,7 +3541,7 @@ function renderQuestion() {
       const ctx = canvas.getContext("2d");
       const cs = window.getComputedStyle(questionForm || document.body);
       // prefer the full font shorthand if available
-      ctx.font = cs.font || `${cs.fontSize} ${cs.fontFamily}`;
+      ctx.font = cs.font || `${cs.fontSize} ${cs.fontFamily} `;
       const measured = ctx.measureText(option.label || "").width;
       if (measured > available) lineCount = 2;
     } catch (e) {
@@ -2470,14 +3552,14 @@ function renderQuestion() {
     const primaryBlock = document.createElement("span");
     primaryBlock.className = "answer-placeholder-block";
     const primaryWidth = Math.floor(Math.random() * 24) + 46; // 46% a 69%
-    primaryBlock.style.width = `${primaryWidth}%`;
+    primaryBlock.style.width = `${primaryWidth}% `;
     placeholders.appendChild(primaryBlock);
 
     if (lineCount > 1) {
       const secondaryBlock = document.createElement("span");
       secondaryBlock.className = "answer-placeholder-block answer-placeholder-block-secondary";
       const secondaryWidth = Math.floor(Math.random() * 22) + 30; // 30% a 51%
-      secondaryBlock.style.width = `${secondaryWidth}%`;
+      secondaryBlock.style.width = `${secondaryWidth}% `;
       placeholders.appendChild(secondaryBlock);
     }
 
@@ -2515,8 +3597,8 @@ function renderQuestion() {
         const elRect = el.getBoundingClientRect();
         const localX = e.clientX - elRect.left;
         const localY = e.clientY - elRect.top;
-        textEl.style.setProperty("--reveal-x", `${localX}px`);
-        textEl.style.setProperty("--reveal-y", `${localY}px`);
+        textEl.style.setProperty("--reveal-x", `${localX} px`);
+        textEl.style.setProperty("--reveal-y", `${localY} px`);
       });
     };
     questionForm.addEventListener("mousemove", questionForm._maskHandler);
@@ -2537,7 +3619,17 @@ function handleNextQuestion() {
   advanceQuestion();
 }
 
+
 async function finishQuiz() {
+  // Bloqueia finalização se excedeu violações ou quiz foi cancelado
+  if (!state.isTeacher && (state.violationCount >= 2 || state.isCancelled)) {
+    alert("Você não pode mais concluir este questionário devido a violações de regras ou tempo esgotado.");
+    state.isActive = false;
+    state.isCancelled = true;
+    showOnlyScreen("cancel");
+    return;
+  }
+
   const quiz = getSelectedQuiz();
   if (!quiz) {
     return;
@@ -2564,7 +3656,7 @@ async function finishQuiz() {
       console.error("Falha também na correção local ofuscada:", localError);
       const secureMessage = getSecureGradingErrorMessage(error);
       const localMessage = getLocalGradingErrorMessage(localError);
-      alert(`${localMessage}\n\nDetalhe técnico: ${secureMessage}`);
+      alert(`${localMessage} \n\nDetalhe técnico: ${secureMessage} `);
       return;
     }
   }
@@ -2618,7 +3710,7 @@ function showResult(result, detailsText) {
     const note = document.createElement("p");
     note.id = "result-blocked-note";
     note.className = "result-blocked-note";
-    note.textContent = "Resumo bloqueado no momento.";
+    note.innerHTML = `Resumo bloqueado no momento. ${getReloadPageLinkHtml()}`;
     resultDetails.parentNode.appendChild(note);
 
     if (resultBackHomeButton && resultBackHomeButton.parentNode) {
@@ -2646,7 +3738,7 @@ function showResult(result, detailsText) {
   showOnlyScreen("result");
 }
 
-function cancelQuiz(reason, options = {}) {
+async function cancelQuiz(reason, options = {}) {
   const quiz = getSelectedQuiz();
   if (!quiz) {
     return;
@@ -2655,7 +3747,9 @@ function cancelQuiz(reason, options = {}) {
   const blockedByViolation = Boolean(options.blockedByViolation);
   const cancelAt = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
   const answersSnapshot = cloneAnswersSnapshot();
-  const result = buildAttemptResult(quiz, answersSnapshot, cancelAt);
+  const cancelled = buildCancelledAttemptResult(quiz, answersSnapshot, cancelAt);
+  const result = cancelled.result;
+  const questionResults = cancelled.questionResults;
 
   state.isActive = false;
   state.isCancelled = true;
@@ -2666,35 +3760,56 @@ function cancelQuiz(reason, options = {}) {
   hidePolicyWarning();
   hideCancelModal();
 
-  saveStoredAttempt(quiz.id, {
+  const attemptPayload = {
     status: "cancelled",
     cancelReason: reason,
     blockedByViolation,
     at: cancelAt,
     result,
-    answers: answersSnapshot
-  });
+    answers: answersSnapshot,
+    questionResults
+  };
 
-  saveCancelledAttemptToFirestore(quiz, {
+  saveStoredAttempt(quiz.id, attemptPayload);
+  savePendingUnloadCancellation({
+    quizId: quiz.id,
+    quizTitle: quiz.title,
+    questionsLength: quiz.questions.length,
     reason,
     blockedByViolation,
     at: cancelAt,
     result,
-    answers: answersSnapshot
+    answers: answersSnapshot,
+    questionResults
   });
+
+  if (!options.skipScreen) {
+    cancelMessage.textContent = reason;
+    showOnlyScreen("cancel");
+    updateReviewButtons(quiz, { status: "cancelled", result, answers: answersSnapshot, questionResults });
+  }
+
+  try {
+    await saveCancelledAttemptToFirestore(quiz, {
+      reason,
+      blockedByViolation,
+      at: cancelAt,
+      result,
+      answers: answersSnapshot,
+      questionResults
+    });
+  } catch (error) {
+    console.error("Erro ao persistir cancelamento do quiz:", error);
+  }
 
   if (options.skipScreen) {
     return;
   }
-
-  cancelMessage.textContent = reason;
-  showOnlyScreen("cancel");
-  updateReviewButtons(quiz, { status: "cancelled", result, answers: answersSnapshot });
 }
 
-function saveCancelledAttemptToFirestore(quiz, cancellation) {
+async function saveCancelledAttemptToFirestore(quiz, cancellation) {
   if (!window.firebaseDB || !window.firebaseSetDoc || !window.firebaseDoc) {
-    return;
+    throw new Error("Firebase indisponível para salvar cancelamento.");
   }
 
   const uid = state.user?.uid || "anon";
@@ -2703,16 +3818,29 @@ function saveCancelledAttemptToFirestore(quiz, cancellation) {
   const timestamp = new Date().toISOString().replace(/[.:]/g, "-");
   const attemptId = `${safeQuizId}_${timestamp}`;
 
+  // Garante que todos os campos necessários estejam presentes
+  const result = cancellation.result || {
+    quizId: quiz.id,
+    quizTitle: quiz.title,
+    studentName: state.studentName || "",
+    earnedPoints: 0,
+    maxPoints: (quiz.questions || []).length,
+    percent: 0,
+    date: cancellation.at || new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })
+  };
+  const answersSnapshot = cancellation.answers || {};
+  const questionResults = cancellation.questionResults || [];
+
   const userRef = window.firebaseDoc(window.firebaseDB, "usuarios", slug);
   const attemptRef = window.firebaseDoc(window.firebaseDB, "usuarios", slug, "tentativas", attemptId);
   const indexRef = window.firebaseDoc(window.firebaseDB, "usuarios_index", uid);
 
   const userPayload = {
     uid,
-    nome: state.studentName || "",
+    nome: state.studentName || result.studentName || "",
     slug,
     email: state.user?.email || "",
-    ultimaAtividade: cancellation.at,
+    ultimaAtividade: result.date,
     atualizadoEmIso: new Date().toISOString()
   };
 
@@ -2720,48 +3848,50 @@ function saveCancelledAttemptToFirestore(quiz, cancellation) {
     uid,
     quizId: quiz.id,
     quizTitulo: quiz.title,
-    nome: state.studentName || "",
-    pontos: cancellation.result?.earnedPoints ?? 0,
-    total: cancellation.result?.maxPoints ?? quiz.questions.length,
-    percentual: cancellation.result?.percent ?? 0,
-    data: cancellation.at,
+    nome: result.studentName,
+    pontos: result.earnedPoints,
+    total: result.maxPoints,
+    percentual: result.percent,
+    data: result.date,
     status: "cancelled",
     bloqueadoPorViolacao: Boolean(cancellation.blockedByViolation),
-    motivoCancelamento: cancellation.reason,
-    respostas: cancellation.answers || {}
+    motivoCancelamento: cancellation.reason || "",
+    respostas: answersSnapshot,
+    correcaoQuestoes: Array.isArray(questionResults) ? questionResults : []
   };
 
-  Promise.all([
+  await Promise.all([
     window.firebaseSetDoc(userRef, userPayload, { merge: true }),
     window.firebaseSetDoc(attemptRef, attemptPayload),
     window.firebaseSetDoc(indexRef, {
       uid,
-      nome: state.studentName || "",
+      nome: state.studentName || result.studentName || "",
       slug,
       email: state.user?.email || "",
       atualizadoEmIso: new Date().toISOString()
     }, { merge: true })
-  ]).then(() => {
-    state.remoteAttemptsByQuiz[quiz.id] = {
-      status: "cancelled",
-      cancelReason: cancellation.reason,
-      blockedByViolation: Boolean(cancellation.blockedByViolation),
-      result: {
-        quizId: quiz.id,
-        quizTitle: quiz.title,
-        studentName: state.studentName || "",
-        earnedPoints: cancellation.result?.earnedPoints ?? 0,
-        maxPoints: cancellation.result?.maxPoints ?? quiz.questions.length,
-        percent: cancellation.result?.percent ?? 0,
-        date: cancellation.at
-      },
-      answers: cancellation.answers || {}
-    };
-    state.remoteAttemptsLoaded = true;
-    renderHome();
-  }).catch((error) => {
-    console.error("Erro ao salvar cancelamento no Firestore:", error);
-  });
+  ]);
+
+  state.remoteAttemptsByQuiz[quiz.id] = {
+    status: "cancelled",
+    cancelReason: cancellation.reason,
+    blockedByViolation: Boolean(cancellation.blockedByViolation),
+    result: {
+      quizId: quiz.id,
+      quizTitle: quiz.title,
+      studentName: state.studentName || "",
+      earnedPoints: result.earnedPoints,
+      maxPoints: result.maxPoints,
+      percent: result.percent,
+      date: result.date,
+      questionResults
+    },
+    answers: answersSnapshot,
+    questionResults
+  };
+  state.remoteAttemptsLoaded = true;
+  clearPendingUnloadCancellation();
+  renderHome();
 }
 
 function saveAttemptToFirestore(quiz, result, answers, questionResults = []) {
@@ -2852,7 +3982,8 @@ function handlePolicyViolation() {
 }
 
 async function handleReturnToQuiz() {
-  if (!state.isActive) {
+  if (!state.isActive || state.isCancelled) {
+    showOnlyScreen("cancel");
     return;
   }
 
