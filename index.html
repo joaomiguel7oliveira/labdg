@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Avaliações LABDG</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Sora:wght@600;700&display=swap"
+    rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <div class="bg-shape bg-shape-1" aria-hidden="true"></div>
+  <div class="bg-shape bg-shape-2" aria-hidden="true"></div>
+
+  <main class="app-shell">
+    <header class="app-header">
+      <div>
+        <h1>Avaliações LABDG</h1>
+        <p>Escolha uma atividade, acompanhe seu progresso e veja seus resultados.</p>
+      </div>
+      <div class="header-actions">
+        <button id="user-chip" class="user-chip hidden" type="button" title="Clique para alterar o nome"></button>
+        <button id="home-header-button" class="btn btn-ghost hidden" type="button">Home</button>
+        <button id="teacher-panel-button" class="btn btn-ghost hidden" type="button">Painel do professor</button>
+        <button id="teacher-builder-button" class="btn btn-ghost hidden" type="button">Criador de quiz</button>
+        <button id="logout-button" class="btn btn-ghost hidden" type="button">Sair</button>
+      </div>
+    </header>
+
+    <section id="auth-screen" class="card auth-card">
+      <h2>Entrar no sistema</h2>
+      <p>Use sua conta Google para acessar os quizzes.</p>
+      <button type="button" id="auth-google" class="btn btn-google">
+        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" />
+        Entrar com Google
+      </button>
+      <p id="auth-message" class="auth-message"></p>
+    </section>
+
+    <section id="profile-screen" class="card auth-card hidden">
+      <h2 id="profile-screen-title">Primeiro acesso</h2>
+      <p id="profile-screen-subtitle">Antes de continuar, informe o nome que será usado em todos os quizzes.</p>
+      <form id="profile-form" class="form-grid" autocomplete="off">
+        <label for="profile-name">Seu nome e sobrenome</label>
+        <input type="text" id="profile-name" maxlength="80" required placeholder="Ex.: Maria Silva" />
+        <button type="submit" class="btn btn-primary" id="profile-submit-button">Salvar e continuar</button>
+        <button type="button" class="btn btn-ghost hidden" id="profile-cancel-button">Cancelar</button>
+      </form>
+      <p id="profile-message" class="auth-message"></p>
+    </section>
+
+
+    <section id="home-screen" class="hidden">
+      <section class="card stats-grid" id="stats-grid">
+        <!-- Estatísticas são renderizadas dinamicamente aqui -->
+      </section>
+      <div class="search-box-inline">
+        <label for="quiz-search">Buscar quiz</label>
+        <input id="quiz-search" type="text" placeholder="Digite título ou tema..." autocomplete="off" />
+      </div>
+      <section class="quiz-grid" id="quiz-grid"></section>
+    </section>
+
+    <section id="teacher-screen" class="card hidden">
+      <div class="teacher-head">
+        <div>
+          <h2>Painel do professor</h2>
+          <p>Lista de alunos, notas, desbloqueio e criador de quiz.</p>
+        </div>
+        <div class="teacher-head-actions">
+          <button id="teacher-refresh-button" type="button" class="btn btn-primary">Atualizar</button>
+        </div>
+      </div>
+      <div id="teacher-message" class="auth-message"></div>
+      <div id="teacher-users-list" class="teacher-users-list"></div>
+    </section>
+
+    <section id="builder-screen" class="card hidden">
+      <div class="teacher-head">
+        <div>
+          <h2>Criador de quiz</h2>
+          <p>Monte seu quiz com perguntas e alternativas sem precisar usar JSON.</p>
+        </div>
+      </div>
+
+      <form id="builder-form" class="teacher-create-form" autocomplete="off">
+        <input id="builder-title" type="text" placeholder="Título do quiz" required autocomplete="off" />
+        <input id="builder-description" type="text" placeholder="Descrição" required autocomplete="off" />
+        <div class="teacher-create-grid">
+          <label class="builder-field-label" for="builder-duration">
+            Duração do quiz
+            <select id="builder-duration" required>
+              <option value="5 min">5 minutos</option>
+              <option value="8 min" selected>8 minutos</option>
+              <option value="10 min">10 minutos</option>
+              <option value="12 min">12 minutos</option>
+              <option value="15 min">15 minutos</option>
+              <option value="20 min">20 minutos</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="builder-questions" class="builder-questions"></div>
+
+        <div class="teacher-head-actions">
+          <button id="builder-add-question-button" type="button" class="btn btn-ghost">Adicionar questão</button>
+          <button id="builder-submit-button" type="submit" class="btn btn-primary">Publicar quiz</button>
+        </div>
+        <p id="builder-message" class="auth-message"></p>
+      </form>
+    </section>
+
+    <section id="start-screen" class="card hidden">
+      <h2 id="selected-quiz-title">Quiz selecionado</h2>
+      <p id="selected-quiz-description"></p>
+      <ul class="quiz-meta" id="selected-quiz-meta"></ul>
+      <p class="result-name">Aluno(a): <strong id="student-name-display">-</strong></p>
+      <div class="start-rules">
+        <h3>Regras e orientações</h3>
+        <ul id="start-rules-list" class="quiz-meta"></ul>
+      </div>
+
+      <form id="start-form" class="form-grid" autocomplete="off">
+        <button type="submit" class="btn btn-primary" id="start-quiz-button">Iniciar questionário</button>
+      </form>
+    </section>
+
+    <section id="quiz-screen" class="card hidden">
+      <div id="quiz-content">
+        <div class="quiz-head">
+          <p id="progress" class="progress-text">Questão 1 de 1</p>
+          <button id="cancel-button" class="btn btn-ghost" type="button">Cancelar</button>
+        </div>
+
+        <h2 id="question-title">Pergunta</h2>
+        <p id="question-description" class="question-description"></p>
+        <div id="question-info-area" class="question-info-area"></div>
+        <form id="question-form" class="answers-list" autocomplete="off"></form>
+
+        <div class="quiz-actions">
+          <button id="clear-answer-button" type="button" class="btn btn-ghost hidden">Limpar</button>
+          <button id="next-button" type="button" class="btn btn-primary">Próxima</button>
+        </div>
+      </div>
+
+      <div id="policy-overlay" class="policy-overlay hidden" role="alert" aria-live="assertive">
+        <h2>Atenção!</h2>
+        <p class="policy-main-text">Volte ao questionário</p>
+        <p id="policy-chances-text" class="policy-chances-text"></p>
+        <p class="policy-countdown-line">tempo restante: <strong id="policy-countdown">10</strong>s</p>
+        <button id="policy-return-button" type="button" class="btn btn-primary">Voltar ao questionário</button>
+      </div>
+
+      <div id="cancel-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal-card">
+          <h3 id="cancel-modal-title">Cancelar questionário?</h3>
+          <p id="cancel-modal-text">Se você cancelar, não terá mais acesso a este quiz.</p>
+          <div class="modal-actions">
+            <button id="cancel-modal-confirm" class="btn btn-danger-soft" type="button">Sim, cancelar</button>
+            <button id="cancel-modal-cancel" class="btn btn-ghost" type="button">Não, voltar</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="cancel-screen" class="card hidden">
+      <h2>Questionário cancelado</h2>
+      <p id="cancel-message"></p>
+      <div class="result-actions">
+        <button type="button" id="cancel-review-button" class="btn btn-ghost hidden">Ver resumo da avaliação</button>
+        <button type="button" id="cancel-back-home-button" class="btn btn-primary">Voltar para a home</button>
+      </div>
+    </section>
+
+    <section id="result-screen" class="card hidden">
+      <p id="result-already-completed" class="result-already-completed hidden" role="alert">
+        Você já realizou este questionário. Este é o resultado anterior.
+      </p>
+      <h2>Resultado final</h2>
+      <p class="result-name">Aluno(a): <strong id="result-student-name">-</strong></p>
+      <p class="result-score" id="result-score">0 / 0</p>
+      <p class="result-percent" id="result-percent">0%</p>
+      <div id="result-details" class="result-details"></div>
+
+      <div class="result-actions">
+        <button id="result-review-button" class="btn btn-ghost hidden" type="button">Ver resumo da avaliação</button>
+        <button id="result-back-home-button" class="btn btn-ghost" type="button">Voltar para a home</button>
+      </div>
+    </section>
+
+    <section id="review-screen" class="card hidden">
+      <h2>Resumo da avaliação</h2>
+      <p id="review-summary-meta" class="result-details"></p>
+      <div id="review-list" class="builder-questions"></div>
+      <div class="result-actions">
+        <button id="review-back-button" class="btn btn-primary" type="button">Voltar</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js";
+    import { getFirestore, setDoc, doc, getDoc, collection, query, where, limit, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-firestore.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-functions.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCjKko57BvZd3phCt9Kw9rZdqLnoM-Z24c",
+      authDomain: "question-750ae.firebaseapp.com",
+      projectId: "question-750ae",
+      storageBucket: "question-750ae.firebasestorage.app",
+      messagingSenderId: "652425702514",
+      appId: "1:652425702514:web:a251a7f0916407f35c66eb",
+      measurementId: "G-9R80SV7VHG"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const functions = getFunctions(app);
+    const auth = getAuth(app);
+    const googleProvider = new GoogleAuthProvider();
+
+    window.firebaseDB = db;
+    window.firebaseSetDoc = setDoc;
+    window.firebaseDoc = doc;
+    window.firebaseGetDoc = getDoc;
+    window.firebaseCollection = collection;
+    window.firebaseQuery = query;
+    window.firebaseWhere = where;
+    window.firebaseLimit = limit;
+    window.firebaseGetDocs = getDocs;
+    window.firebaseDeleteDoc = deleteDoc;
+    window.firebaseFunctions = functions;
+    window.firebaseHttpsCallable = httpsCallable;
+    window.firebaseSignInWithGoogle = () => signInWithPopup(auth, googleProvider);
+    window.firebaseOnAuthStateChanged = (callback) => onAuthStateChanged(auth, callback);
+    window.firebaseSignOut = () => signOut(auth);
+  </script>
+  <script src="script.js"></script>
+</body>
+
+</html>
