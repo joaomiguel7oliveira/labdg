@@ -24,9 +24,16 @@
         <p>Escolha uma atividade, acompanhe seu progresso e veja seus resultados.</p>
       </div>
       <div class="header-actions">
-        <button id="user-chip" class="user-chip hidden" type="button" title="Clique para alterar o nome"></button>
+        <div class="user-chip-wrap">
+          <button id="user-chip" class="user-chip hidden" type="button"></button>
+          <div id="user-chip-popup" class="user-chip-popup hidden">
+            <p id="user-chip-popup-email" class="user-chip-popup-email"></p>
+            <button type="button" class="btn btn-ghost btn-sm" id="user-chip-popup-rename">Editar nome</button>
+          </div>
+        </div>
         <button id="home-header-button" class="btn btn-ghost hidden" type="button">Home</button>
-        <button id="teacher-panel-button" class="btn btn-ghost hidden" type="button">Painel do professor</button>
+        <button id="teacher-panel-button" class="btn btn-ghost hidden" type="button">Resultados</button>
+        <button id="teacher-classrooms-button" class="btn btn-ghost hidden" type="button">Turmas</button>
         <button id="teacher-builder-button" class="btn btn-ghost hidden" type="button">Criador de quiz</button>
         <button id="logout-button" class="btn btn-ghost hidden" type="button">Sair</button>
       </div>
@@ -48,6 +55,13 @@
       <form id="profile-form" class="form-grid" autocomplete="off">
         <label for="profile-name">Seu nome e sobrenome</label>
         <input type="text" id="profile-name" maxlength="80" required placeholder="Ex.: Maria Silva" />
+        <div id="profile-classroom-group">
+          <select id="profile-classroom" required>
+            <option value="">Selecione uma turma</option>
+          </select>
+          <div id="profile-no-classroom-message" style="display:none;color:#b71c1c;font-size:0.95em;margin-top:4px">
+          </div>
+        </div>
         <button type="submit" class="btn btn-primary" id="profile-submit-button">Salvar e continuar</button>
         <button type="button" class="btn btn-ghost hidden" id="profile-cancel-button">Cancelar</button>
       </form>
@@ -56,9 +70,6 @@
 
 
     <section id="home-screen" class="hidden">
-      <section class="card stats-grid" id="stats-grid">
-        <!-- Estatísticas são renderizadas dinamicamente aqui -->
-      </section>
       <div class="search-box-inline">
         <label for="quiz-search">Buscar quiz</label>
         <input id="quiz-search" type="text" placeholder="Digite título ou tema..." autocomplete="off" />
@@ -69,8 +80,8 @@
     <section id="teacher-screen" class="card hidden">
       <div class="teacher-head">
         <div>
-          <h2>Painel do professor</h2>
-          <p>Lista de alunos, notas, desbloqueio e criador de quiz.</p>
+          <h2>Resultados</h2>
+          <p>Acompanhe notas, cancelamentos e resumos das tentativas por turma e aluno.</p>
         </div>
         <div class="teacher-head-actions">
           <button id="teacher-refresh-button" type="button" class="btn btn-primary">Atualizar</button>
@@ -78,6 +89,25 @@
       </div>
       <div id="teacher-message" class="auth-message"></div>
       <div id="teacher-users-list" class="teacher-users-list"></div>
+    </section>
+
+    <section id="teacher-classrooms-screen" class="card hidden">
+      <div class="teacher-head">
+        <div>
+          <h2>Turmas</h2>
+          <p>Crie, acompanhe e exclua turmas disponíveis para os alunos.</p>
+        </div>
+      </div>
+      <section class="teacher-create-card" id="teacher-classroom-card">
+        <h3>Nova turma</h3>
+        <p>As turmas criadas aqui ficam disponíveis para seleção dos alunos no primeiro login.</p>
+        <form id="teacher-classroom-form" class="teacher-create-form" autocomplete="off">
+          <input id="teacher-classroom-name" type="text" maxlength="80" placeholder="Ex.: 2A manhã" required />
+          <button id="teacher-classroom-submit" type="submit" class="btn btn-primary">Criar turma</button>
+        </form>
+      </section>
+      <div id="teacher-classrooms-message" class="auth-message"></div>
+      <div id="teacher-classrooms-list" class="teacher-classrooms-list"></div>
     </section>
 
     <section id="builder-screen" class="card hidden">
@@ -119,15 +149,19 @@
       <h2 id="selected-quiz-title">Quiz selecionado</h2>
       <p id="selected-quiz-description"></p>
       <ul class="quiz-meta" id="selected-quiz-meta"></ul>
-      <p class="result-name">Aluno(a): <strong id="student-name-display">-</strong></p>
+      <p class="result-name">Aluno(a): <strong id="student-name-display" class="student-name-clickable">-</strong><span
+          id="student-email-display" class="student-email-hint hidden"></span></p>
       <div class="start-rules">
         <h3>Regras e orientações</h3>
         <ul id="start-rules-list" class="quiz-meta"></ul>
       </div>
+      <div id="timed-warning-display" class="quiz-meta-highlight hidden"></div>
 
       <form id="start-form" class="form-grid" autocomplete="off">
         <button type="submit" class="btn btn-primary" id="start-quiz-button">Iniciar questionário</button>
       </form>
+      <button type="button" class="btn btn-ghost hidden" id="start-reload-button">↻ Atualizar
+      </button>
     </section>
 
     <section id="quiz-screen" class="card hidden">
