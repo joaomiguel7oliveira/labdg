@@ -204,12 +204,11 @@
   </main>
 
   <script type="module">
-    // Import the functions you need from the SDKs you need
-    import { initializeApp } from "firebase/app";
-    // TODO: Add SDKs for Firebase products that you want to use
-    // https://firebase.google.com/docs/web/setup#available-libraries
-    
-    // Your web app's Firebase configuration
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-app.js";
+    import { getFirestore, setDoc, doc, getDoc, collection, query, where, limit, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-firestore.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-functions.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-auth.js";
+
     const firebaseConfig = {
       apiKey: "AIzaSyBnH_bV95dJ_7GlNi7dWSaXJNBBEmsQ-nA",
       authDomain: "oficinando-3c9de.firebaseapp.com",
@@ -218,8 +217,7 @@
       messagingSenderId: "396918901793",
       appId: "1:396918901793:web:b7406c288d6e563c556760"
     };
-    
-    // Initialize Firebase
+
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
     const functions = getFunctions(app);
