@@ -285,8 +285,19 @@ if (authGoogleBtn) {
     try {
       await window.firebaseSignInWithGoogle();
     } catch (error) {
-      authMessage.textContent = "Não foi possível entrar com Google.";
+      // Friendly, actionable messages for common Firebase auth errors
       console.error(error);
+      if (error && (error.code === "auth/operation-not-allowed" || /operation-not-allowed/.test(error.message))) {
+        authMessage.textContent = "Login com Google desativado: habilite o provedor Google em Firebase Console → Authentication → Sign-in method.";
+      } else if (error && (error.code === "auth/popup-blocked" || error.code === "auth/popup-closed-by-user")) {
+        authMessage.textContent = "Popup bloqueado ou fechado. Verifique bloqueadores de popup e tente novamente.";
+      } else {
+        authMessage.textContent = "Não foi possível entrar com Google. Verifique o console para mais detalhes.";
+      }
+      // Helpful suggestion when running from file:// (popups/auth won't work)
+      if (location.protocol === "file:") {
+        authMessage.textContent += " Execute um servidor local (ex.: `python -m http.server 8000`) e acesse via http://localhost:8000.";
+      }
     }
   });
 }
