@@ -1732,6 +1732,20 @@ input[type="text"]:focus {
         width: 100%;
     }
 
+    .quiz-card-actions {
+        gap: 10px;
+    }
+
+    .quiz-card-actions button[data-quiz],
+    .quiz-card-actions button[data-quick-review],
+    .quiz-card-actions button[data-summary-blocked] {
+        width: 100%;
+        min-height: 42px;
+        height: 42px;
+        max-height: 42px;
+        font-size: 0.9rem;
+    }
+
     .quiz-card-manage-actions {
         display: grid;
         grid-template-columns: 1fr;
@@ -1747,6 +1761,23 @@ input[type="text"]:focus {
     .teacher-head {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    #result-screen {
+        gap: 10px;
+    }
+
+    #result-quiz-title {
+        font-size: 0.95rem;
+        padding: 10px 12px;
+    }
+
+    #result-details {
+        padding: 10px 12px;
+    }
+
+    #result-screen .result-actions .btn {
+        width: 100%;
     }
 
     .quiz-card .btn,
