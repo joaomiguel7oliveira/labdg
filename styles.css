@@ -23,6 +23,12 @@
     box-sizing: border-box;
 }
 
+html,
+body {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
 body {
     margin: 0;
     min-height: 100vh;
@@ -64,6 +70,15 @@ body {
 .app-header p {
     margin: 8px 0 0;
     color: var(--ink-soft);
+}
+
+.app-header>div:first-child {
+    min-width: 0;
+}
+
+.app-header p,
+.app-header h1 {
+    overflow-wrap: anywhere;
 }
 
 .header-actions {
@@ -1682,6 +1697,28 @@ input[type="text"]:focus {
 @media (max-width: 560px) {
     body {
         padding: 12px;
+    }
+
+    .app-shell {
+        width: 100%;
+        max-width: 100%;
+    }
+
+    .app-header {
+        padding: 16px;
+    }
+
+    .header-actions {
+        max-width: 100%;
+        overflow-x: visible;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-start;
+    }
+
+    .header-actions .btn,
+    .header-actions .user-chip {
+        max-width: 100%;
     }
 
     #home-screen .card {
