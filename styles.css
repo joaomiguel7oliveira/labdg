@@ -808,13 +808,15 @@ input[type="text"]:focus {
     color: #334155;
     font-family: "Sora", sans-serif;
     font-size: 1rem;
-    font-weight: 700;
+    font-weight: 800;
     letter-spacing: 0.01em;
+    overflow-wrap: anywhere;
 }
 
 #result-screen .result-name {
     margin: 2px 0 0;
     color: var(--ink-soft);
+    overflow-wrap: anywhere;
 }
 
 #result-screen .result-score,
@@ -828,6 +830,7 @@ input[type="text"]:focus {
     border: 1px solid #d7dee8;
     border-radius: 10px;
     background: #f8fafc;
+    overflow-wrap: anywhere;
 }
 
 #result-screen .result-actions {
@@ -1490,6 +1493,7 @@ input[type="text"]:focus {
 .teacher-col-quiz,
 .teacher-cell-quiz {
     width: 20%;
+    font-weight: 800;
 }
 
 .teacher-col-score,
@@ -1849,11 +1853,6 @@ input[type="text"]:focus {
         padding: 14px;
     }
 
-    .teacher-table {
-        min-width: 620px;
-        table-layout: auto;
-    }
-
     .teacher-row-actions {
         display: grid;
         grid-template-columns: 1fr;
@@ -1866,6 +1865,117 @@ input[type="text"]:focus {
 
     .teacher-cell-date {
         white-space: normal;
+    }
+}
+
+@media (max-width: 760px) {
+    .teacher-table-wrap {
+        overflow-x: visible;
+        border: 0;
+        background: transparent;
+    }
+
+    .teacher-table {
+        min-width: 0;
+        width: 100%;
+        display: block;
+    }
+
+    .teacher-table thead {
+        display: none;
+    }
+
+    .teacher-table tbody {
+        display: grid;
+        gap: 12px;
+    }
+
+    .teacher-table tbody tr {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fff;
+    }
+
+    .teacher-table td {
+        border: 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+        align-items: start;
+        width: 100%;
+        min-width: 0;
+        text-align: left;
+    }
+
+    .teacher-cell-quiz,
+    .teacher-cell-score,
+    .teacher-cell-percent,
+    .teacher-status-cell,
+    .teacher-cell-date,
+    .teacher-cell-actions,
+    .teacher-col-quiz,
+    .teacher-col-score,
+    .teacher-col-percent,
+    .teacher-col-status,
+    .teacher-col-date,
+    .teacher-col-actions {
+        width: 100%;
+        min-width: 0;
+        text-align: left;
+    }
+
+    .teacher-table td::before {
+        font-size: 0.74rem;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        color: var(--ink-soft);
+        font-weight: 800;
+        line-height: 1.2;
+        content: "";
+    }
+
+    .teacher-table td:nth-child(1)::before {
+        content: "Quiz";
+    }
+
+    .teacher-table td:nth-child(2)::before {
+        content: "Nota";
+    }
+
+    .teacher-table td:nth-child(3)::before {
+        content: "%";
+    }
+
+    .teacher-table td:nth-child(4)::before {
+        content: "Status";
+    }
+
+    .teacher-table td:nth-child(5)::before {
+        content: "Data";
+    }
+
+    .teacher-table td:nth-child(6)::before {
+        content: "Acoes";
+    }
+
+    .teacher-status-cell {
+        min-width: 0;
+    }
+
+    .teacher-row-actions {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .teacher-row-actions .btn {
+        width: 100%;
+        min-width: 0;
+        min-height: 42px;
     }
 }
 
