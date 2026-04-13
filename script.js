@@ -306,6 +306,20 @@ if (userChip) {
 if (userChipPopupRename) {
   userChipPopupRename.addEventListener("click", () => {
     if (userChipPopup) userChipPopup.classList.add("hidden");
+
+    if (state.isActive && getSelectedQuiz() && !state.isTeacher) {
+      openActionModal({
+        title: "Alterar nome durante a avaliação?",
+        text: "Se você continuar, o questionário atual será cancelado e você perderá o acesso a ele.",
+        confirmLabel: "Sim, alterar nome",
+        onConfirm: async () => {
+          await cancelQuiz("Questionário bloqueado ao alterar o nome durante a avaliação.", { blockedByViolation: true, skipScreen: true });
+          openRenameProfileScreen();
+        }
+      });
+      return;
+    }
+
     openRenameProfileScreen();
   });
 }
