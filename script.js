@@ -120,6 +120,7 @@ const cancelBackHomeButton = document.getElementById("cancel-back-home-button");
 const cancelReviewButton = document.getElementById("cancel-review-button");
 
 const resultAlreadyCompleted = document.getElementById("result-already-completed");
+const resultQuizTitle = document.getElementById("result-quiz-title");
 const resultStudentName = document.getElementById("result-student-name");
 const resultScore = document.getElementById("result-score");
 const resultPercent = document.getElementById("result-percent");
@@ -307,14 +308,6 @@ document.addEventListener("click", () => {
   if (userChipPopup) userChipPopup.classList.add("hidden");
 });
 
-document.addEventListener("click", (event) => {
-  const reloadLink = event.target.closest(".reload-page-link");
-  if (!reloadLink) {
-    return;
-  }
-  event.preventDefault();
-  window.location.reload();
-});
 if (builderForm) {
   builderForm.addEventListener("submit", handleBuilderCreateQuiz);
 }
@@ -477,13 +470,9 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
-function getReloadPageLinkHtml() {
-  return '<a href="#" class="reload-page-link">(atualizar página)</a>';
-}
-
 function getBlockedReviewNoteHtml(baseMessage = "") {
   const prefix = baseMessage ? `${escapeHtml(baseMessage)} ` : "";
-  return `${prefix}<span class="quiz-review-note">Resumo bloqueado no momento. ${getReloadPageLinkHtml()}</span>`;
+  return `${prefix}<span class="quiz-review-note">Resumo bloqueado no momento.</span>`;
 }
 
 function normalizeClassroomId(name) {
@@ -2052,7 +2041,7 @@ function openTeacherAttemptReview(attempt) {
             <h4>Questão ${index + 1}</h4>
             <span class="quiz-status ${item.isCorrect ? "available" : "cancelled"}">${statusText}</span>
           </div>
-          <p class="review-question-title"><strong>${item.questionTitle || `Questão ${index + 1}`}</strong></p>
+          <p class="review-question-title">${item.questionTitle || `Questão ${index + 1}`}</p>
           <div class="review-options-block">
             <p class="review-options-title">Alternativas</p>
             ${allOptionsHtml}
@@ -2882,7 +2871,7 @@ function openReviewScreen(backScreen = "result") {
             <h4>Questão ${index + 1}</h4>
             <span class="quiz-status ${item.isCorrect ? "available" : "cancelled"}">${statusText}</span>
           </div>
-          <p class="review-question-title"><strong>${item.questionTitle || `Questão ${index + 1}`}</strong></p>
+          <p class="review-question-title">${item.questionTitle || `Questão ${index + 1}`}</p>
           <div class="review-options-block">
             <p class="review-options-title">Alternativas</p>
             ${allOptionsHtml}
@@ -3003,7 +2992,7 @@ function renderHome() {
         <button class="btn btn-primary btn-sm ${canOpenQuiz ? "" : "btn-start-blocked"}" data-quiz="${quiz.id}" title="${canOpenQuiz ? "" : "Atualizar"}">
           ${mainButtonLabel}
         </button>
-        ${attempt?.result ? (quiz.allowStudentReview ? `<button class="btn btn-ghost btn-sm" data-quick-review="${quiz.id}">Resumo</button>` : `<button class="btn btn-ghost btn-sm" disabled title="Resumo bloqueado no momento">Resumo</button>`) : ""}
+        ${attempt?.result ? (quiz.allowStudentReview ? `<button class="btn btn-primary btn-sm" data-quick-review="${quiz.id}">Resumo</button>` : `<button class="btn btn-primary btn-sm btn-summary-blocked" data-summary-blocked="${quiz.id}" title="Atualizar">Resumo</button>`) : ""}
         ${state.isTeacher ? `<button class="btn btn-ghost btn-sm" data-toggle-start="${quiz.id}">${quiz.allowStudentStart ? "Bloquear início" : "Liberar início"}</button>` : ""}
         ${state.isTeacher ? `<button class="btn btn-ghost btn-sm" data-toggle-review="${quiz.id}">${quiz.allowStudentReview ? "Bloquear resumo" : "Liberar resumo"}</button>` : ""}
         ${state.isTeacher ? `
@@ -3026,7 +3015,7 @@ function renderHome() {
         ` : ""}
       </div>
       ${!state.isTeacher && !attempt && !quiz.allowStudentStart ? `<p class="quiz-review-note">Início bloqueado no momento. Aguarde o professor liberar este quiz.</p>` : ""}
-      ${attempt && !quiz.allowStudentReview ? `<p class="quiz-review-note">Resumo bloqueado no momento. ${getReloadPageLinkHtml()}</p>` : ""}
+      ${attempt && !quiz.allowStudentReview ? `<p class="quiz-review-note">Resumo bloqueado no momento.</p>` : ""}
     `;
 
     const quickReviewButton = card.querySelector("button[data-quick-review]");
@@ -3038,6 +3027,19 @@ function renderHome() {
           return;
         }
         openReviewScreen("home");
+      });
+    }
+
+    const blockedSummaryButton = card.querySelector("button[data-summary-blocked]");
+    if (blockedSummaryButton) {
+      blockedSummaryButton.addEventListener("mouseenter", () => {
+        blockedSummaryButton.textContent = "Atualizar";
+      });
+      blockedSummaryButton.addEventListener("mouseleave", () => {
+        blockedSummaryButton.textContent = "Resumo";
+      });
+      blockedSummaryButton.addEventListener("click", () => {
+        window.location.reload();
       });
     }
 
@@ -3690,6 +3692,9 @@ async function finishQuiz() {
 
 function showResult(result, detailsText) {
   resultStudentName.textContent = result.studentName;
+  if (resultQuizTitle) {
+    resultQuizTitle.textContent = `Avaliação: ${result.quizTitle || result.quizId || "-"}`;
+  }
   resultScore.textContent = `${result.earnedPoints} / ${result.maxPoints}`;
   resultPercent.textContent = `${result.percent}% de acertos`;
   const quiz = getSelectedQuiz();
@@ -3710,16 +3715,25 @@ function showResult(result, detailsText) {
     const note = document.createElement("p");
     note.id = "result-blocked-note";
     note.className = "result-blocked-note";
-    note.innerHTML = `Resumo bloqueado no momento. ${getReloadPageLinkHtml()}`;
+    note.textContent = "Resumo bloqueado no momento.";
     resultDetails.parentNode.appendChild(note);
 
     if (resultBackHomeButton && resultBackHomeButton.parentNode) {
       const disabledBtn = document.createElement("button");
       disabledBtn.type = "button";
       disabledBtn.id = "result-review-disabled";
-      disabledBtn.className = "btn btn-disabled-gray";
-      disabledBtn.disabled = true;
+      disabledBtn.className = "btn btn-disabled-gray btn-summary-blocked";
       disabledBtn.textContent = "Ver resumo";
+      disabledBtn.title = "Atualizar";
+      disabledBtn.addEventListener("mouseenter", () => {
+        disabledBtn.textContent = "Atualizar";
+      });
+      disabledBtn.addEventListener("mouseleave", () => {
+        disabledBtn.textContent = "Ver resumo";
+      });
+      disabledBtn.addEventListener("click", () => {
+        window.location.reload();
+      });
       resultBackHomeButton.parentNode.insertBefore(disabledBtn, resultBackHomeButton);
     }
   }
