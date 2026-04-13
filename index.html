@@ -13,7 +13,7 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 
-<body>
+<body class="app-booting">
   <div class="bg-shape bg-shape-1" aria-hidden="true"></div>
   <div class="bg-shape bg-shape-2" aria-hidden="true"></div>
 
@@ -47,6 +47,11 @@
         Entrar com Google
       </button>
       <p id="auth-message" class="auth-message"></p>
+    </section>
+
+    <section id="boot-screen" class="card auth-card">
+      <h2>Carregando ambiente</h2>
+      <p>Verificando sua sessao para entrar rapidamente.</p>
     </section>
 
     <section id="profile-screen" class="card auth-card hidden">
