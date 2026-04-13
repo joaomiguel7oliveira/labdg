@@ -32,6 +32,7 @@ const state = {
 let pendingModalAction = null;
 
 const authScreen = document.getElementById("auth-screen");
+const bootScreen = document.getElementById("boot-screen");
 const homeScreen = document.getElementById("home-screen");
 const teacherScreen = document.getElementById("teacher-screen");
 const teacherClassroomsScreen = document.getElementById("teacher-classrooms-screen");
@@ -432,6 +433,13 @@ window.addEventListener("beforeunload", (event) => {
 });
 
 document.addEventListener("DOMContentLoaded", initializeAuth);
+
+function endBootPhase() {
+  document.body.classList.remove("app-booting");
+  if (bootScreen) {
+    bootScreen.classList.add("hidden");
+  }
+}
 
 function initializeAuth() {
   if (typeof window.firebaseOnAuthStateChanged !== "function") {
@@ -993,7 +1001,7 @@ async function flushPendingUnloadCancellation() {
   }
 }
 
-async function refreshQuizConfigs() {
+async function refreshQuizConfigs(options = {}) {
   if (!window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs) {
     state.quizConfigs = {};
     return;
@@ -1014,7 +1022,9 @@ async function refreshQuizConfigs() {
     });
 
     state.quizConfigs = nextMap;
-    renderHome();
+    if (options.render !== false) {
+      renderHome();
+    }
   } catch (error) {
     console.error("Erro ao carregar configuração de quizzes:", error);
   }
@@ -1366,7 +1376,7 @@ function normalizeCustomQuiz(rawQuiz, docId) {
   };
 }
 
-async function refreshCustomQuizzes() {
+async function refreshCustomQuizzes(options = {}) {
   if (!window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs) {
     state.customQuizzes = [];
     return;
@@ -1389,7 +1399,9 @@ async function refreshCustomQuizzes() {
     });
 
     state.customQuizzes = nextCustom;
-    renderHome();
+    if (options.render !== false) {
+      renderHome();
+    }
   } catch (error) {
     console.error("Erro ao carregar quizzes customizados:", error);
   }
@@ -1421,7 +1433,7 @@ async function toggleQuizReview(quizId) {
 
   try {
     await setQuizConfig(quizId, { allowStudentReview: !Boolean(quiz.allowStudentReview), hidden: false });
-    await refreshQuizConfigs();
+    await refreshQuizConfigs({ render: false });
     await refreshCustomQuizzes();
   } catch (error) {
     console.error("Erro ao atualizar liberação do resumo:", error);
@@ -1441,7 +1453,7 @@ async function toggleQuizStart(quizId) {
 
   try {
     await setQuizConfig(quizId, { allowStudentStart: !Boolean(quiz.allowStudentStart), hidden: false });
-    await refreshQuizConfigs();
+    await refreshQuizConfigs({ render: false });
     await refreshCustomQuizzes();
   } catch (error) {
     console.error("Erro ao atualizar liberação de início do quiz:", error);
@@ -1559,6 +1571,7 @@ function openRenameProfileScreen() {
 }
 
 async function showProfileScreen() {
+  endBootPhase();
   state.isRenamingProfile = false;
   if (profileScreenTitle) profileScreenTitle.textContent = "Primeiro acesso";
   if (profileScreenSubtitle) profileScreenSubtitle.textContent = "Antes de continuar, informe o nome que será usado em todos os quizzes.";
@@ -1750,6 +1763,7 @@ async function handleProfileSubmit(event) {
 }
 
 function showAuthenticatedUI() {
+  endBootPhase();
   authScreen.classList.add("hidden");
   profileScreen.classList.add("hidden");
   teacherScreen.classList.add("hidden");
@@ -1793,6 +1807,7 @@ function showAuthenticatedUI() {
 }
 
 function showUnauthenticatedUI() {
+  endBootPhase();
   state.isTeacher = false;
   state.studentName = "";
   state.profileSlug = "";
