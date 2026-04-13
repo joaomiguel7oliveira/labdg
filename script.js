@@ -30,6 +30,7 @@ const state = {
 };
 
 let pendingModalAction = null;
+let lastHomeRenderSignature = "";
 
 const authScreen = document.getElementById("auth-screen");
 const bootScreen = document.getElementById("boot-screen");
@@ -190,8 +191,12 @@ if (cancelModalCancel) {
   });
 }
 policyReturnButton.addEventListener("click", handleReturnToQuiz);
-resultBackHomeButton.addEventListener("click", showHome);
-cancelBackHomeButton.addEventListener("click", showHome);
+resultBackHomeButton.addEventListener("click", async () => {
+  await showHome({ refresh: true });
+});
+cancelBackHomeButton.addEventListener("click", async () => {
+  await showHome({ refresh: true });
+});
 if (resultReviewButton) {
   resultReviewButton.addEventListener("click", async () => {
     if (state.selectedQuizId) {
@@ -216,7 +221,7 @@ if (reviewBackButton) {
     }
 
     if (state.reviewBackScreen === "home") {
-      showHome();
+      await showHome({ refresh: true });
       return;
     }
 
@@ -254,10 +259,10 @@ if (reviewBackButton) {
 }
 teacherRefreshButton.addEventListener("click", openTeacherPanel);
 if (homeHeaderButton) {
-  homeHeaderButton.addEventListener("click", () => {
+  homeHeaderButton.addEventListener("click", async () => {
     if (state.isActive && getSelectedQuiz()) {
       if (state.isTeacher) {
-        showHome();
+        await showHome({ refresh: true });
         return;
       }
       openActionModal({
@@ -266,12 +271,12 @@ if (homeHeaderButton) {
         confirmLabel: "Sim, ir para a home",
         onConfirm: async () => {
           await cancelQuiz("Questionário bloqueado ao voltar para a home durante a avaliação.", { blockedByViolation: true, skipScreen: true });
-          showHome();
+          await showHome({ refresh: true });
         }
       });
       return;
     }
-    showHome();
+    await showHome({ refresh: true });
   });
 }
 if (builderAddQuestionButton) {
@@ -1034,7 +1039,7 @@ function isRetakeReleased(quizId) {
   return Boolean(state.retakeReleases?.[quizId]);
 }
 
-async function refreshRetakeReleases() {
+async function refreshRetakeReleases(options = {}) {
   if (!window.firebaseDB || !window.firebaseDoc || !window.firebaseGetDoc || !state.profileSlug) {
     state.retakeReleases = {};
     return;
@@ -1057,7 +1062,9 @@ async function refreshRetakeReleases() {
         if (state.remoteAttemptsByQuiz) delete state.remoteAttemptsByQuiz[quizId];
       }
     });
-    renderHome();
+    if (options.render !== false) {
+      renderHome();
+    }
   } catch (error) {
     console.error("Erro ao carregar liberações de refazer:", error);
     state.retakeReleases = {};
@@ -1843,7 +1850,7 @@ function showUnauthenticatedUI() {
   showOnlyScreen(null);
 }
 
-async function refreshTeacherAccess() {
+async function refreshTeacherAccess(options = {}) {
   state.isTeacher = false;
   teacherPanelButton.classList.add("hidden");
   if (teacherClassroomsButton) {
@@ -1876,7 +1883,9 @@ async function refreshTeacherAccess() {
     }
 
     // Garante que os cards reflitam imediatamente permissões de professor
-    renderHome();
+    if (options.render !== false) {
+      renderHome();
+    }
   } catch (error) {
     console.error("Erro ao validar permissão de professor:", error);
   }
@@ -2901,7 +2910,7 @@ function openReviewScreen(backScreen = "result") {
   showOnlyScreen("review");
 }
 
-async function refreshRemoteAttempts() {
+async function refreshRemoteAttempts(options = {}) {
   if (!window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs || !state.profileSlug) {
     return;
   }
@@ -2955,7 +2964,9 @@ async function refreshRemoteAttempts() {
       }
     });
 
-    renderHome();
+    if (options.render !== false) {
+      renderHome();
+    }
   } catch (error) {
     console.error("Erro ao carregar tentativas remotas:", error);
   }
@@ -2970,11 +2981,18 @@ function renderHome() {
   });
 
   if (list.length === 0) {
+    const emptySignature = `empty|${filterText}|${state.isTeacher ? "teacher" : "student"}`;
+    if (lastHomeRenderSignature === emptySignature) {
+      return;
+    }
     quizGrid.innerHTML = `<article class="card"><p>Nenhum quiz encontrado.</p></article>`;
+    lastHomeRenderSignature = emptySignature;
     return;
   }
 
-  quizGrid.innerHTML = "";
+  const fragment = document.createDocumentFragment();
+  const signatureParts = [];
+
   list.forEach((quiz) => {
     let attempt = getKnownAttempt(quiz.id);
     // Se o professor liberou nova tentativa, remove status cancelado/completed
@@ -2991,6 +3009,16 @@ function renderHome() {
       status === "completed" ? "Concluído" :
         status === "cancelled" ? "Cancelado" :
           "Disponível";
+
+    signatureParts.push([
+      quiz.id,
+      status,
+      canOpenQuiz ? "1" : "0",
+      quiz.allowStudentStart ? "1" : "0",
+      quiz.allowStudentReview ? "1" : "0",
+      attempt?.result?.date || "",
+      state.isTeacher ? "1" : "0"
+    ].join("|"));
 
     const card = document.createElement("article");
     card.className = "card quiz-card";
@@ -3119,8 +3147,16 @@ function renderHome() {
       });
     }
 
-    quizGrid.appendChild(card);
+    fragment.appendChild(card);
   });
+
+  const nextSignature = `${filterText}|${state.isTeacher ? "teacher" : "student"}|${signatureParts.join("||")}`;
+  if (lastHomeRenderSignature === nextSignature) {
+    return;
+  }
+
+  quizGrid.replaceChildren(fragment);
+  lastHomeRenderSignature = nextSignature;
 }
 
 
@@ -3262,7 +3298,18 @@ async function openQuiz(quizId) {
   showOnlyScreen("start");
 }
 
-function showHome() {
+async function refreshHomeNavigationData() {
+  await Promise.allSettled([
+    refreshQuizConfigs({ render: false }),
+    refreshCustomQuizzes({ render: false }),
+    refreshRetakeReleases({ render: false }),
+    refreshRemoteAttempts({ render: false }),
+    refreshTeacherAccess({ render: false })
+  ]);
+}
+
+async function showHome(options = {}) {
+  const shouldRefresh = options.refresh !== false;
   clearSessionState();
   showOnlyScreen(null);
   teacherScreen.classList.add("hidden");
@@ -3274,6 +3321,11 @@ function showHome() {
   }
   homeScreen.classList.remove("hidden");
   resultAlreadyCompleted.classList.add("hidden");
+
+  if (shouldRefresh) {
+    await refreshHomeNavigationData();
+  }
+
   renderHome();
 }
 
