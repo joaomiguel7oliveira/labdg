@@ -164,6 +164,28 @@ body {
     color: var(--ink-soft);
 }
 
+#boot-screen {
+    text-align: center;
+}
+
+body.app-booting #auth-screen,
+body.app-booting #profile-screen,
+body.app-booting #home-screen,
+body.app-booting #teacher-screen,
+body.app-booting #teacher-classrooms-screen,
+body.app-booting #builder-screen,
+body.app-booting #start-screen,
+body.app-booting #quiz-screen,
+body.app-booting #cancel-screen,
+body.app-booting #result-screen,
+body.app-booting #review-screen {
+    display: none;
+}
+
+body:not(.app-booting) #boot-screen {
+    display: none;
+}
+
 .auth-message {
     min-height: 24px;
     color: var(--danger);
