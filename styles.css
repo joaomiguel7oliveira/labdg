@@ -49,6 +49,11 @@ body {
     gap: 18px;
 }
 
+body.quiz-mode .app-shell {
+    min-height: calc(100vh - 40px);
+    align-content: center;
+}
+
 .app-header {
     background: rgba(255, 253, 247, 0.9);
     border: 1px solid var(--line);
@@ -633,6 +638,12 @@ input[type="text"]:focus {
 #quiz-screen {
     position: relative;
     overflow: hidden;
+    margin-inline: auto;
+    width: min(900px, 100%);
+}
+
+#quiz-screen #cancel-button {
+    display: none !important;
 }
 
 .question-info-area {
@@ -660,6 +671,16 @@ input[type="text"]:focus {
     font-size: 1rem;
 }
 
+.question-timer.question-timer-danger {
+    border-color: #e88f8f;
+    background: #fde9e9;
+    color: #9e2f2f;
+}
+
+.question-timer.question-timer-danger strong {
+    color: #bf1f1f;
+}
+
 .question-timeout-notice {
     display: grid;
     gap: 12px;
@@ -675,6 +696,11 @@ input[type="text"]:focus {
     font-weight: 700;
 }
 
+.question-timeout-autonext {
+    font-weight: 600;
+    color: #7a2e1f;
+}
+
 .start-rules {
     margin-top: 12px;
     padding: 12px;
@@ -686,6 +712,12 @@ input[type="text"]:focus {
 .start-rules h3 {
     margin: 0 0 8px;
     font-size: 1rem;
+}
+
+.start-rules,
+.start-rules h3,
+.start-rules .quiz-meta {
+    color: #111;
 }
 
 .quiz-locked #quiz-content {
@@ -801,15 +833,10 @@ input[type="text"]:focus {
 
 #result-quiz-title {
     margin: 0;
-    padding: 11px 13px;
-    border-radius: 10px;
-    border: 1px solid #cbd5e1;
-    background: #f1f5f9;
-    color: #334155;
-    font-family: "Sora", sans-serif;
+    color: var(--ink-soft);
+    font-family: "Manrope", sans-serif;
     font-size: 1rem;
-    font-weight: 800;
-    letter-spacing: 0.01em;
+    font-weight: 700;
     overflow-wrap: anywhere;
 }
 
@@ -826,11 +853,35 @@ input[type="text"]:focus {
 
 #result-details {
     margin-top: 0;
-    padding: 12px 14px;
+    padding: 16px 18px;
     border: 1px solid #d7dee8;
-    border-radius: 10px;
+    border-radius: 12px;
     background: #f8fafc;
+    display: grid;
+    gap: 8px;
     overflow-wrap: anywhere;
+}
+
+.result-meta-line {
+    margin: 0;
+}
+
+.result-meta-line-strong {
+    font-weight: 800;
+    color: #1f2937;
+}
+
+.result-meta-line-key {
+    font-size: 0.82rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5f6b7a;
+}
+
+.result-meta-line-highlight {
+    color: #8f2c21;
+    font-weight: 700;
 }
 
 #result-screen .result-actions {
@@ -1987,4 +2038,440 @@ input[type="text"]:focus {
     background: #e6f4ee;
     border-radius: 8px;
     padding: 10px 14px;
+}
+
+/* ── Relatório de Turma ─────────────────────────────────────────────────── */
+
+.classroom-report-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 32px 16px;
+    overflow-y: auto;
+}
+
+.classroom-report-card {
+    background: var(--surface, var(--card));
+    border-radius: 20px;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+    padding: 22px 22px 24px;
+    width: 100%;
+    max-width: 760px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.classroom-report-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.classroom-report-header h3 {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 800;
+}
+
+.classroom-report-quiz-select-area {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+}
+
+.classroom-report-quiz-select-area>label {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--ink-soft);
+}
+
+.cr-refresh-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.classroom-report-loading {
+    padding: 12px 0;
+    color: var(--ink-soft);
+    font-size: 0.95rem;
+}
+
+.classroom-report-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.cr-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 2px 0;
+}
+
+.cr-quiz-title {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--ink-soft);
+}
+
+.cr-updated-at {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: #4d7c6a;
+    background: #e8f4ec;
+    border: 1px solid #cfe6d7;
+    border-radius: 999px;
+    padding: 4px 10px;
+}
+
+.cr-summary-block {
+    background: #fbf8f2;
+    border: 1px solid #e7dcc8;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+/* Cards de estatísticas */
+.cr-stat-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+}
+
+.cr-stat-card {
+    background: #fffdfa;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.cr-stat-card-highlight {
+    background: #e8f4ec;
+    border-color: #b8d9c2;
+}
+
+.cr-stat-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-soft);
+}
+
+.cr-stat-value {
+    font-size: 1.2rem;
+    font-weight: 800;
+    color: var(--ink);
+    line-height: 1;
+}
+
+/* Seções internas */
+.cr-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.cr-section-panel {
+    background: #fbf8f2;
+    border: 1px solid #e7dcc8;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+.cr-section-title {
+    margin: 0;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+/* Barras de distribuição por faixa */
+.cr-bar-row {
+    display: grid;
+    grid-template-columns: 56px 1fr 42px 50px;
+    align-items: center;
+    gap: 8px;
+}
+
+.cr-bar-label {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--ink-soft);
+    text-align: right;
+}
+
+.cr-bar-track {
+    background: #e5dfd3;
+    border-radius: 6px;
+    height: 9px;
+    overflow: hidden;
+}
+
+.cr-bar-fill {
+    height: 100%;
+    background: #8bb89a;
+    border-radius: 6px;
+    transition: width 0.4s ease;
+    min-width: 0;
+}
+
+.cr-bar-pct {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--ink);
+    text-align: right;
+}
+
+.cr-bar-count {
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+}
+
+/* Questões */
+.cr-questions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.cr-question-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: #fffdfa;
+    border: 1px solid #e7dcc8;
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+
+.cr-question-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.cr-question-header .cr-question-bars {
+    flex: 1;
+    min-width: 60px;
+}
+
+.cr-question-info {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.cr-question-num {
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: #445164;
+    white-space: nowrap;
+    flex-shrink: 0;
+    background: #eef1f5;
+    border: 1px solid #d8dee8;
+    border-radius: 999px;
+    padding: 2px 8px;
+}
+
+.cr-question-title {
+    font-size: 0.86rem;
+    color: var(--ink);
+    margin: 0;
+    line-height: 1.35;
+    text-align: left !important;
+    width: 100%;
+}
+
+.cr-alternatives-list {
+    list-style: none;
+    margin: 2px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.cr-alt {
+    font-size: 0.82rem;
+    color: var(--ink-soft);
+    padding: 3px 8px;
+    border-radius: 6px;
+    line-height: 1.35;
+}
+
+.cr-alt-correct {
+    background: #e2f0e8;
+    color: #2d6a47;
+    font-weight: 700;
+}
+
+.cr-alt-check {
+    font-size: 0.8rem;
+    margin-left: 3px;
+}
+
+.cr-question-bars {
+    display: flex;
+    height: 7px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: #e5dfd3;
+}
+
+.cr-qbar {
+    height: 100%;
+    min-width: 0;
+    transition: width 0.4s ease;
+}
+
+.cr-qbar-correct {
+    background: #7db890;
+}
+
+.cr-qbar-wrong {
+    background: #e08278;
+}
+
+.cr-question-pcts {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    text-align: right;
+}
+
+.cr-pct-correct {
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: #3a7a50;
+}
+
+.cr-pct-wrong {
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: #9b3127;
+}
+
+.cr-empty {
+    margin: 0;
+    color: var(--ink-soft);
+    font-size: 0.86rem;
+    padding: 9px 12px;
+    background: #f8f4eb;
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+}
+
+/* Botão de relatório ao lado do título da turma */
+.teacher-classroom-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.teacher-classroom-section-head h3 {
+    margin: 0;
+}
+
+/* Image upload field in builder */
+.builder-image-field {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.builder-image-upload {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.builder-image-input {
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.builder-image-input:hover {
+    border-color: #8bb89a;
+}
+
+.builder-image-preview {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 60px;
+}
+
+.builder-image-preview img {
+    max-width: 100%;
+    max-height: 150px;
+    border-radius: 8px;
+    object-fit: contain;
+}
+
+@media (max-width: 600px) {
+    .classroom-report-card {
+        padding: 18px 14px 16px;
+        gap: 12px;
+    }
+
+    .classroom-report-quiz-select-area {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .cr-refresh-btn {
+        width: 100%;
+    }
+
+    .cr-topline {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+    }
+
+    .cr-stat-row {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .cr-question-row {
+        gap: 8px;
+    }
+
+    .cr-bar-row {
+        grid-template-columns: 48px 1fr 38px;
+    }
+
+    .cr-bar-count {
+        display: none;
+    }
 }
