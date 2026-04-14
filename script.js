@@ -26,7 +26,10 @@ const state = {
   isViolationGraceActive: false,
   violationTimeoutId: null,
   violationIntervalId: null,
-  violationDeadline: 0
+  violationDeadline: 0,
+  attemptStartedAtMs: 0,
+  attemptStartedAtLabel: "",
+  baselineDPR: 1
 };
 
 let pendingModalAction = null;
@@ -34,6 +37,7 @@ let lastHomeRenderSignature = "";
 
 const authScreen = document.getElementById("auth-screen");
 const bootScreen = document.getElementById("boot-screen");
+const appHeader = document.querySelector(".app-header");
 const homeScreen = document.getElementById("home-screen");
 const teacherScreen = document.getElementById("teacher-screen");
 const teacherClassroomsScreen = document.getElementById("teacher-classrooms-screen");
@@ -57,6 +61,7 @@ function getPendingUnloadKey() {
 const builderTitleInput = document.getElementById("builder-title");
 const builderDescriptionInput = document.getElementById("builder-description");
 const builderDurationInput = document.getElementById("builder-duration");
+const builderAlternativesVisibilityInput = document.getElementById("builder-alternatives-visibility");
 const builderQuestions = document.getElementById("builder-questions");
 const builderAddQuestionButton = document.getElementById("builder-add-question-button");
 const builderMessage = document.getElementById("builder-message");
@@ -161,17 +166,21 @@ if (clearAnswerButton) {
     }
 
     delete state.answers[question.id];
+    const alternativesVisibilityMode = quiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed";
+    if (alternativesVisibilityMode === "revealed" && questionForm) {
+      questionForm.classList.remove("masked");
+    }
     clearValidationMessage();
     updateNextButtonVisibility();
   });
 }
 cancelButton.addEventListener("click", () => {
   openActionModal({
-    title: "Cancelar questionário?",
-    text: "Se você cancelar, não terá mais acesso a este quiz.",
-    confirmLabel: "Sim, cancelar",
+    title: "Bloquear avaliação?",
+    text: "Se você bloquear agora, não terá mais acesso a este quiz.",
+    confirmLabel: "Sim, bloquear",
     onConfirm: async () => {
-      await cancelQuiz("Questionário bloqueado ao cancelar a avaliação.", { blockedByViolation: true });
+      await cancelQuiz("Questionário bloqueado ao bloquear a avaliação.", { blockedByViolation: true });
     }
   });
 });
@@ -233,21 +242,21 @@ if (reviewBackButton) {
     const attempt = getAttemptForSelectedQuiz();
 
     if (state.reviewBackScreen === "cancel") {
-      const base = attempt?.cancelReason || "Questionário cancelado por violação de regras.";
-      if (quiz && !quiz.allowStudentReview) {
-        cancelMessage.innerHTML = getBlockedReviewNoteHtml(base);
-      } else {
-        cancelMessage.textContent = base;
-      }
+      const base = attempt?.cancelReason || "Avaliação bloqueada por violação de regras.";
+      showResult(attempt?.result || {}, "", { isBlocked: true, reason: base });
       if (quiz && attempt) {
         updateReviewButtons(quiz, attempt);
       }
-      showOnlyScreen("cancel");
       return;
     }
 
     if (attempt?.result) {
-      showResult(attempt.result, "Resultado carregado.");
+      if (attempt.status === "cancelled") {
+        const reason = attempt.cancelReason || "Avaliação bloqueada por violação de regras.";
+        showResult(attempt.result, "", { isBlocked: true, reason });
+      } else {
+        showResult(attempt.result, "");
+      }
       if (quiz) {
         updateReviewButtons(quiz, attempt);
       }
@@ -267,7 +276,7 @@ if (homeHeaderButton) {
       }
       openActionModal({
         title: "Ir para a home?",
-        text: "Ao voltar para a home, este questionário será cancelado e você perderá o acesso a ele.",
+        text: "Ao voltar para a home, este questionário será bloqueado e você perderá o acesso a ele.",
         confirmLabel: "Sim, ir para a home",
         onConfirm: async () => {
           await cancelQuiz("Questionário bloqueado ao voltar para a home durante a avaliação.", { blockedByViolation: true, skipScreen: true });
@@ -310,7 +319,7 @@ if (userChipPopupRename) {
     if (state.isActive && getSelectedQuiz() && !state.isTeacher) {
       openActionModal({
         title: "Alterar nome durante a avaliação?",
-        text: "Se você continuar, o questionário atual será cancelado e você perderá o acesso a ele.",
+        text: "Se você continuar, o questionário atual será bloqueado e você perderá o acesso a ele.",
         confirmLabel: "Sim, alterar nome",
         onConfirm: async () => {
           await cancelQuiz("Questionário bloqueado ao alterar o nome durante a avaliação.", { blockedByViolation: true, skipScreen: true });
@@ -380,7 +389,7 @@ logoutButton.addEventListener("click", async () => {
     }
     openActionModal({
       title: "Sair da plataforma?",
-      text: "Ao sair agora, este questionário será cancelado e você perderá o acesso a ele.",
+      text: "Ao sair agora, este questionário será bloqueado e você perderá o acesso a ele.",
       confirmLabel: "Sim, sair",
       onConfirm: async () => {
         await cancelQuiz("Questionário bloqueado ao sair da plataforma durante a avaliação.", { blockedByViolation: true, skipScreen: true });
@@ -438,6 +447,20 @@ window.addEventListener("blur", () => {
 document.addEventListener("fullscreenchange", () => {
   if (state.isActive && !state.isTeacher && !isFullscreenActive()) {
     handlePolicyViolation();
+  }
+});
+
+document.addEventListener("wheel", (e) => {
+  if (state.isActive && !state.isTeacher && e.ctrlKey) {
+    e.preventDefault();
+  }
+}, { passive: false });
+
+document.addEventListener("keydown", (e) => {
+  if (state.isActive && !state.isTeacher && e.ctrlKey) {
+    if (["=", "+", "-", "_", "0"].includes(e.key)) {
+      e.preventDefault();
+    }
   }
 });
 
@@ -942,7 +965,7 @@ function persistUnloadCancellation() {
   }
 
   const cancelAt = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-  const reason = "Questionário cancelado ao recarregar ou fechar a página.";
+  const reason = "Questionário bloqueado ao recarregar ou fechar a página.";
   const answersSnapshot = cloneAnswersSnapshot();
   const cancelled = buildCancelledAttemptResult(quiz, answersSnapshot, cancelAt);
   const result = cancelled.result;
@@ -1377,6 +1400,7 @@ function normalizeCustomQuiz(rawQuiz, docId) {
         points: Number(question.points || 1),
         timer: Number(question.timer || 0),
         options,
+        image: question.image || null,
         answerToken: String(question.answerToken || "")
       };
     })
@@ -1391,6 +1415,7 @@ function normalizeCustomQuiz(rawQuiz, docId) {
     title: rawQuiz.title,
     description: rawQuiz.description || "",
     duration: rawQuiz.duration || "10 min",
+    alternativesVisibilityMode: rawQuiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed",
     allowStudentReview: Boolean(rawQuiz.allowStudentReview),
     questions: normalizedQuestions,
     isCustom: true
@@ -1523,10 +1548,24 @@ async function removeQuiz(quizId) {
   try {
     if (quiz.isCustom) {
       const quizRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId);
+      const answersRef = window.firebaseDoc(window.firebaseDB, "quizzes_answer_keys", quizId);
       if (window.firebaseDeleteDoc) {
-        await window.firebaseDeleteDoc(quizRef);
+        await Promise.all([
+          window.firebaseDeleteDoc(quizRef),
+          window.firebaseDeleteDoc(answersRef)
+        ]);
       } else {
-        await window.firebaseSetDoc(quizRef, { ativo: false }, { merge: true });
+        await Promise.all([
+          window.firebaseSetDoc(quizRef, {
+            ativo: false,
+            questions: [],
+            atualizadoEmIso: new Date().toISOString()
+          }, { merge: true }),
+          window.firebaseSetDoc(answersRef, {
+            answers: {},
+            atualizadoEmIso: new Date().toISOString()
+          }, { merge: true })
+        ]);
       }
     }
 
@@ -1927,6 +1966,49 @@ function parsePtBrDate(dateString) {
   return new Date(year, month, day, hour, minute, second).getTime();
 }
 
+function computeAttemptDurationSeconds(startMs, endMs = Date.now()) {
+  const start = Number(startMs || 0);
+  const end = Number(endMs || 0);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0 || end <= start) {
+    return 0;
+  }
+  return Math.max(0, Math.round((end - start) / 1000));
+}
+
+function formatDurationFromSeconds(totalSeconds) {
+  const value = Number(totalSeconds || 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return "-";
+  }
+
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const seconds = value % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, "0")}min ${String(seconds).padStart(2, "0")}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}min ${String(seconds).padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
+}
+
+function attachAttemptTimingMetadata(result, endLabel, endMs = Date.now()) {
+  if (!result || typeof result !== "object") {
+    return;
+  }
+
+  const durationSeconds = computeAttemptDurationSeconds(state.attemptStartedAtMs, endMs);
+  result.startedAt = result.startedAt || state.attemptStartedAtLabel || "";
+  result.endedAt = result.endedAt || endLabel || result.date || "";
+  result.durationSeconds = Number.isFinite(Number(result.durationSeconds)) && Number(result.durationSeconds) > 0
+    ? Number(result.durationSeconds)
+    : durationSeconds;
+  result.durationLabel = result.durationLabel || formatDurationFromSeconds(result.durationSeconds);
+  result.date = result.date || result.endedAt;
+}
+
 function getLatestAttemptsByQuiz(attempts) {
   const latestMap = {};
   attempts.forEach((attempt) => {
@@ -2021,6 +2103,10 @@ async function loadLatestAttemptBySlugQuiz(slug, quizId) {
         maxPoints: latest.total ?? 0,
         percent: latest.percentual ?? 0,
         date: latest.data,
+        startedAt: latest.inicioAvaliacao || "",
+        endedAt: latest.fimAvaliacao || latest.data,
+        durationSeconds: Number(latest.duracaoSegundos || 0),
+        durationLabel: latest.duracaoTexto || "",
         questionResults: latest.correcaoQuestoes || []
       },
       answers: latest.respostas || {},
@@ -2104,7 +2190,7 @@ async function loadTeacherPanelData() {
   teacherUsersList.innerHTML = "";
 
   try {
-    await refreshClassrooms();
+    refreshClassrooms();
     const usersRef = window.firebaseCollection(window.firebaseDB, "usuarios");
     const usersSnap = await window.firebaseGetDocs(usersRef);
 
@@ -2114,7 +2200,7 @@ async function loadTeacherPanelData() {
     }
 
     const groups = {};
-    for (const userDoc of usersSnap.docs) {
+    const userCards = await Promise.all(usersSnap.docs.map(async (userDoc) => {
       const userData = userDoc.data();
       const slug = userDoc.id;
       const turmaNome = String(userData.turmaNome || "").trim() || "Sem turma";
@@ -2138,7 +2224,7 @@ async function loadTeacherPanelData() {
                 <div class="teacher-status-stack">
                   <span class="quiz-status ${attempt.status === "cancelled" ? "cancelled" : "completed"}">
                     ${attempt.status === "cancelled"
-            ? ((attempt.blockedByViolation || attempt.bloqueadoPorViolacao) ? "Bloqueado por violação" : "Cancelado")
+            ? ((attempt.blockedByViolation || attempt.bloqueadoPorViolacao) ? "Bloqueado por violação" : "Bloqueado")
             : "Concluído"}
                   </span>
                   ${attempt.status === "cancelled" && (attempt.motivoCancelamento || attempt.cancelReason)
@@ -2185,11 +2271,15 @@ async function loadTeacherPanelData() {
         </article>
       `;
 
+      return { turmaNome, userCard, slug, userData };
+    }));
+
+    userCards.forEach(({ turmaNome, userCard }) => {
       if (!groups[turmaNome]) {
         groups[turmaNome] = [];
       }
       groups[turmaNome].push(userCard);
-    }
+    });
 
     const orderedTurmas = Object.keys(groups).sort((a, b) => {
       if (a === "Sem turma") return 1;
@@ -2200,7 +2290,10 @@ async function loadTeacherPanelData() {
     teacherUsersList.innerHTML = orderedTurmas
       .map((turmaNome) => `
         <section class="teacher-classroom-section">
-          <h3>Turma: ${turmaNome}</h3>
+          <div class="teacher-classroom-section-head">
+            <h3>Turma: ${turmaNome}</h3>
+            <button type="button" class="btn btn-ghost btn-sm teacher-classroom-report-btn" data-turma="${escapeHtml(turmaNome)}">Relatório da turma</button>
+          </div>
           <div class="teacher-users-list">
             ${groups[turmaNome].join("")}
           </div>
@@ -2258,9 +2351,242 @@ async function loadTeacherPanelData() {
         openTeacherAttemptReview(attempt);
       });
     });
+
+    teacherUsersList.querySelectorAll(".teacher-classroom-report-btn").forEach((button) => {
+      button.addEventListener("click", () => {
+        const turmaNome = button.dataset.turma;
+        const slugsNaTurma = [];
+        userCards.forEach(({ turmaNome: t, userCard: _, slug, userData: _u }) => {
+          if (t === turmaNome) slugsNaTurma.push({ slug: _u?.slug, nome: _u?.nome });
+        });
+        // Recolhe slugs diretamente dos dados já processados
+        const membros = [];
+        usersSnap.docs.forEach((userDoc) => {
+          const data = userDoc.data();
+          const turma = String(data.turmaNome || "").trim() || "Sem turma";
+          if (turma === turmaNome) {
+            membros.push({ slug: userDoc.id, nome: data.nome || userDoc.id });
+          }
+        });
+        openClassroomReportModal(turmaNome, membros);
+      });
+    });
   } catch (error) {
     teacherMessage.textContent = "Erro ao carregar painel do professor.";
     console.error(error);
+  }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Relatório de Turma
+// ────────────────────────────────────────────────────────────────────────────
+
+const classroomReportModal = document.getElementById("classroom-report-modal");
+const classroomReportClose = document.getElementById("classroom-report-close");
+const classroomReportQuizSelect = document.getElementById("classroom-report-quiz-select");
+const classroomReportLoading = document.getElementById("classroom-report-loading");
+const classroomReportBody = document.getElementById("classroom-report-body");
+const classroomReportRefresh = document.getElementById("classroom-report-refresh");
+
+if (classroomReportClose) {
+  classroomReportClose.addEventListener("click", () => {
+    if (classroomReportModal) classroomReportModal.classList.add("hidden");
+  });
+}
+
+if (classroomReportModal) {
+  classroomReportModal.addEventListener("click", (e) => {
+    if (e.target === classroomReportModal) classroomReportModal.classList.add("hidden");
+  });
+}
+
+let _classroomReportMembros = [];
+let _classroomReportTurma = "";
+
+if (classroomReportQuizSelect) {
+  classroomReportQuizSelect.addEventListener("change", async () => {
+    const quizId = classroomReportQuizSelect.value;
+    if (!quizId) {
+      if (classroomReportBody) classroomReportBody.classList.add("hidden");
+      if (classroomReportLoading) classroomReportLoading.classList.add("hidden");
+      return;
+    }
+    await renderClassroomReport(_classroomReportTurma, _classroomReportMembros, quizId);
+  });
+}
+
+if (classroomReportRefresh) {
+  classroomReportRefresh.addEventListener("click", async () => {
+    const quizId = classroomReportQuizSelect?.value;
+    if (!quizId) return;
+    await renderClassroomReport(_classroomReportTurma, _classroomReportMembros, quizId);
+  });
+}
+
+function openClassroomReportModal(turmaNome, membros) {
+  if (!classroomReportModal || !classroomReportQuizSelect) return;
+
+  _classroomReportTurma = turmaNome;
+  _classroomReportMembros = membros;
+
+  const modalTitle = document.getElementById("classroom-report-title");
+  if (modalTitle) modalTitle.textContent = `Relatório — ${turmaNome}`;
+
+  const quizzes = getAllQuizzes();
+  classroomReportQuizSelect.innerHTML = '<option value="">-- Selecione um quiz --</option>' +
+    quizzes.map((q) => `<option value="${escapeHtml(q.id)}">${escapeHtml(q.title)}</option>`).join("");
+  if (classroomReportBody) classroomReportBody.classList.add("hidden");
+  if (classroomReportLoading) classroomReportLoading.classList.add("hidden");
+
+  classroomReportModal.classList.remove("hidden");
+}
+
+async function renderClassroomReport(turmaNome, membros, quizId) {
+  if (!classroomReportBody || !classroomReportLoading) return;
+
+  classroomReportBody.classList.add("hidden");
+  classroomReportLoading.classList.remove("hidden");
+  try {
+    const quiz = getAllQuizzes().find((q) => q.id === quizId);
+    const quizTitle = quiz ? quiz.title : quizId;
+
+    const quizQuestionsLookup = {};
+    if (quiz && Array.isArray(quiz.questions)) {
+      quiz.questions.forEach((q) => {
+        quizQuestionsLookup[String(q.id)] = q;
+      });
+    }
+
+    const attemptResults = await Promise.all(membros.map(async ({ slug, nome }) => {
+      const attempt = await loadLatestAttemptBySlugQuiz(slug, quizId);
+      return { slug, nome, attempt };
+    }));
+
+    const concluidos = attemptResults.filter((r) => r.attempt && r.attempt.status === "completed");
+    const bloqueados = attemptResults.filter((r) => r.attempt && r.attempt.status === "cancelled");
+    const semTentativa = attemptResults.filter((r) => !r.attempt);
+    const total = concluidos.length;
+
+    let mediaTurma = 0;
+    if (total > 0) {
+      mediaTurma = Math.round(concluidos.reduce((sum, r) => sum + (r.attempt.result?.percent ?? 0), 0) / total);
+    }
+
+    const faixas = [
+      { label: "0–49%", min: 0, max: 49, count: 0 },
+      { label: "50–69%", min: 50, max: 69, count: 0 },
+      { label: "70–89%", min: 70, max: 89, count: 0 },
+      { label: "90–100%", min: 90, max: 100, count: 0 }
+    ];
+    concluidos.forEach(({ attempt }) => {
+      const p = attempt.result?.percent ?? 0;
+      for (const f of faixas) {
+        if (p >= f.min && p <= f.max) { f.count++; break; }
+      }
+    });
+
+    const questaoMap = {};
+    concluidos.forEach(({ attempt }) => {
+      const qr = Array.isArray(attempt.questionResults) ? attempt.questionResults
+        : Array.isArray(attempt.result?.questionResults) ? attempt.result.questionResults : [];
+      qr.forEach((q) => {
+        const qid = String(q.questionId || q.id || "");
+        if (!qid) return;
+        if (!questaoMap[qid]) {
+          const quizQ = quizQuestionsLookup[qid];
+          questaoMap[qid] = {
+            title: q.questionTitle || quizQ?.title || qid,
+            options: quizQ?.options || [],
+            image: quizQ?.image || "",
+            answerToken: quizQ?.answerToken || "",
+            acertos: 0, erros: 0, brancos: 0
+          };
+        }
+        if (q.isCorrect) questaoMap[qid].acertos++;
+        else if (q.selectedValue) questaoMap[qid].erros++;
+        else questaoMap[qid].brancos++;
+      });
+    });
+
+    const questoes = Object.values(questaoMap);
+
+    const statCards = `
+    <div class="cr-stat-row">
+      <div class="cr-stat-card"><span class="cr-stat-label">Concluídos</span><strong class="cr-stat-value">${total}</strong></div>
+      <div class="cr-stat-card"><span class="cr-stat-label">Bloqueados</span><strong class="cr-stat-value">${bloqueados.length}</strong></div>
+      <div class="cr-stat-card"><span class="cr-stat-label">Sem tentativa</span><strong class="cr-stat-value">${semTentativa.length}</strong></div>
+      <div class="cr-stat-card cr-stat-card-highlight"><span class="cr-stat-label">Média da turma</span><strong class="cr-stat-value">${total > 0 ? mediaTurma + "%" : "-"}</strong></div>
+    </div>`;
+
+    const barras = faixas.map((f) => {
+      const pct = total > 0 ? Math.round((f.count / total) * 100) : 0;
+      return `
+        <div class="cr-bar-row">
+          <span class="cr-bar-label">${f.label}</span>
+          <div class="cr-bar-track"><div class="cr-bar-fill" style="width:${pct}%"></div></div>
+          <span class="cr-bar-pct">${pct}%</span>
+          <span class="cr-bar-count">(${f.count})</span>
+        </div>`;
+    }).join("");
+
+    const questoesRows = questoes.length > 0
+      ? questoes.map((q, idx) => {
+        const tot = q.acertos + q.erros + q.brancos;
+        const acertoPct = tot > 0 ? Math.round((q.acertos / tot) * 100) : 0;
+        const erroPct = tot > 0 ? Math.round((q.erros / tot) * 100) : 0;
+        const altHtml = q.options.length > 0
+          ? '<ul class="cr-alternatives-list">' +
+          q.options.map((opt) => {
+            const isCorrect = String(opt.value) === String(q.answerToken);
+            return `<li class="cr-alt${isCorrect ? " cr-alt-correct" : ""}">${escapeHtml(String(opt.value))}) ${escapeHtml(String(opt.label))}${isCorrect ? ' <span class="cr-alt-check">&#10003;</span>' : ""}</li>`;
+          }).join("") +
+          "</ul>"
+          : "";
+        const imgHtml = q.image ? `<img src="${q.image}" style="max-width: 100%; max-height: 200px; border-radius: 8px; margin: 6px auto 0; display: block;" alt="Imagem da questão" />` : "";
+        return `
+          <div class="cr-question-row">
+            <div class="cr-question-header">
+              <span class="cr-question-num">Q${idx + 1}</span>
+              <div class="cr-question-bars">
+                <div class="cr-qbar cr-qbar-correct" style="width:${acertoPct}%" title="Acertos: ${acertoPct}%"></div>
+                <div class="cr-qbar cr-qbar-wrong" style="width:${erroPct}%" title="Erros: ${erroPct}%"></div>
+              </div>
+              <div class="cr-question-pcts">
+                <span class="cr-pct-correct">&#10003; ${acertoPct}%</span>
+                <span class="cr-pct-wrong">&#10007; ${erroPct}%</span>
+              </div>
+            </div>
+            <p class="cr-question-title">${escapeHtml(String(q.title))}</p>
+            ${imgHtml}
+            ${altHtml}
+          </div>`;
+      }).join("")
+      : '<p class="cr-empty">Sem dados de questões disponíveis.</p>';
+
+    classroomReportBody.innerHTML = `
+      <div class="cr-topline">
+        <p class="cr-quiz-title">Quiz: <strong>${escapeHtml(quizTitle)}</strong></p>
+        <span class="cr-updated-at">Dados atualizados</span>
+      </div>
+      <div class="cr-summary-block">
+        ${statCards}
+      </div>
+      <div class="cr-section cr-section-panel">
+        <h4 class="cr-section-title">Distribuição de desempenho</h4>
+        ${total > 0 ? barras : '<p class="cr-empty">Sem dados suficientes.</p>'}
+      </div>
+      <div class="cr-section cr-section-panel">
+        <h4 class="cr-section-title">Desempenho por questão</h4>
+        <div class="cr-questions-list">${questoesRows}</div>
+      </div>`;
+
+    classroomReportBody.classList.remove("hidden");
+  } catch (error) {
+    console.error("Erro ao renderizar relatório da turma:", error);
+    classroomReportBody.innerHTML = '<p class="cr-empty">Não foi possível carregar o relatório. Tente novamente.</p>';
+    classroomReportBody.classList.remove("hidden");
+  } finally {
+    classroomReportLoading.classList.add("hidden");
   }
 }
 
@@ -2334,6 +2660,40 @@ function updateBuilderRadioGroups() {
   });
 }
 
+function fileToCompressedDataUrl(file, maxDimension = 1280, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDimension) {
+          height = Math.round((height * maxDimension) / width);
+          width = maxDimension;
+        } else if (height > maxDimension) {
+          width = Math.round((width * maxDimension) / height);
+          height = maxDimension;
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas indisponivel."));
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = () => reject(new Error("Falha ao carregar imagem."));
+      img.src = String(reader.result || "");
+    };
+    reader.onerror = () => reject(new Error("Falha ao ler arquivo."));
+    reader.readAsDataURL(file);
+  });
+}
 function addBuilderQuestionCard(seed = {}) {
   if (!builderQuestions) {
     return;
@@ -2353,6 +2713,14 @@ function addBuilderQuestionCard(seed = {}) {
     </div>
     <input type="text" class="builder-question-title" placeholder="Enunciado da questão" value="${(seed.title || "").replace(/"/g, "&quot;")}" required />
     <input type="text" class="builder-question-description" placeholder="Descrição (opcional)" value="${(seed.description || "").replace(/"/g, "&quot;")}" />
+    <div class="builder-image-field">
+      <label class="builder-field-label">Imagem (opcional)</label>
+      <div class="builder-image-upload">
+        <input type="file" class="builder-image-input" accept="image/*" />
+        <div class="builder-image-preview"></div>
+        <input type="hidden" class="builder-image-url" value="${seed.image || ""}" />
+      </div>
+    </div>
     <div class="builder-question-meta-grid">
       <label class="builder-field-label">
         Pontuação
@@ -2386,6 +2754,64 @@ function addBuilderQuestionCard(seed = {}) {
   const optionsEl = card.querySelector(".builder-options");
   const addOptionButton = card.querySelector(".builder-add-option");
   addOptionButton.addEventListener("click", () => addBuilderOptionRow(optionsEl));
+
+  // Image upload handler
+  const imageInput = card.querySelector(".builder-image-input");
+  const imagePreview = card.querySelector(".builder-image-preview");
+  const imageUrlHidden = card.querySelector(".builder-image-url");
+
+  if (seed.image) {
+    const previewImg = document.createElement("img");
+    previewImg.src = seed.image;
+    previewImg.style.maxWidth = "100%";
+    previewImg.style.maxHeight = "150px";
+    previewImg.style.borderRadius = "8px";
+    previewImg.style.marginTop = "8px";
+    imagePreview.appendChild(previewImg);
+  }
+
+  if (imageInput) {
+    imageInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      if (!file.type.startsWith("image/")) {
+        alert("Por favor, selecione uma imagem valida.");
+        return;
+      }
+
+      if (file.size > 5 * 1024 * 1024) {
+        alert("Imagem muito grande. Maximo 5MB.");
+        return;
+      }
+
+      imageInput.disabled = true;
+      imagePreview.innerHTML = "<p style=\"font-size: 0.8rem; color: #666;\">Processando imagem...</p>";
+
+      try {
+        let dataUrl = await fileToCompressedDataUrl(file, 1280, 0.8);
+        if (dataUrl.length > 1500000) {
+          dataUrl = await fileToCompressedDataUrl(file, 960, 0.7);
+        }
+
+        imageUrlHidden.value = dataUrl;
+        imagePreview.innerHTML = "";
+
+        const previewImg = document.createElement("img");
+        previewImg.src = dataUrl;
+        previewImg.style.maxWidth = "100%";
+        previewImg.style.maxHeight = "150px";
+        previewImg.style.borderRadius = "8px";
+        previewImg.style.marginTop = "8px";
+        imagePreview.appendChild(previewImg);
+      } catch (error) {
+        console.error("Erro ao processar imagem:", error);
+        imagePreview.innerHTML = "<p style=\"color: #c33; font-size: 0.8rem;\">Erro ao processar imagem. Tente novamente.</p>";
+      } finally {
+        imageInput.disabled = false;
+      }
+    });
+  }
 
   const seedOptions = Array.isArray(seed.options) && seed.options.length >= 2
     ? seed.options
@@ -2434,6 +2860,9 @@ async function startEditingQuiz(quizId) {
   builderTitleInput.value = quiz.title || "";
   builderDescriptionInput.value = quiz.description || "";
   builderDurationInput.value = quiz.duration || "8 min";
+  if (builderAlternativesVisibilityInput) {
+    builderAlternativesVisibilityInput.value = quiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed";
+  }
   builderQuestions.innerHTML = "";
   (quiz.questions || []).forEach((question, index) => {
     const questionId = question.id || `q${index + 1}`;
@@ -2458,6 +2887,7 @@ function buildQuestionsFromBuilder() {
   for (const card of getBuilderQuestionCards()) {
     const title = card.querySelector(".builder-question-title")?.value.trim() || "";
     const description = card.querySelector(".builder-question-description")?.value.trim() || "";
+    const image = card.querySelector(".builder-image-url")?.value.trim() || "";
     const points = Number(card.querySelector(".builder-question-points")?.value || 1);
     const optionRows = Array.from(card.querySelectorAll(".builder-option-row"));
     const timer = Number(card.querySelector(".builder-question-timer")?.value || 0);
@@ -2496,6 +2926,7 @@ function buildQuestionsFromBuilder() {
       points: Number.isFinite(points) && points > 0 ? points : 1,
       options,
       timer: Number.isFinite(timer) && timer > 0 ? timer : 0,
+      image: image || null,
       _correctAnswer: correctAnswer
     });
 
@@ -2545,6 +2976,7 @@ async function handleBuilderCreateQuiz(event) {
   const title = builderTitleInput?.value.trim() || "";
   const description = builderDescriptionInput?.value.trim() || "";
   const duration = builderDurationInput?.value.trim() || "10 min";
+  const alternativesVisibilityMode = builderAlternativesVisibilityInput?.value === "hidden" ? "hidden" : "revealed";
 
   if (!title || !description) {
     if (builderMessage) {
@@ -2575,6 +3007,7 @@ async function handleBuilderCreateQuiz(event) {
       points: question.points,
       options: question.options,
       timer: question.timer,
+      image: question.image || null,
       answerToken: buildAnswerToken(quizId, questionId, correctAnswer)
     };
   });
@@ -2583,6 +3016,7 @@ async function handleBuilderCreateQuiz(event) {
     title,
     description,
     duration,
+    alternativesVisibilityMode,
     questions: questionsWithTokens,
     ativo: true,
     criadoPorUid: state.user?.uid || "",
@@ -2704,6 +3138,7 @@ function buildCancelledAttemptResult(quiz, answersSnapshot = cloneAnswersSnapsho
   }, 0);
 
   const percent = maxPoints > 0 ? Math.round((earnedPoints / maxPoints) * 100) : 0;
+  const durationSeconds = computeAttemptDurationSeconds(state.attemptStartedAtMs, Date.now());
 
   return {
     result: {
@@ -2714,6 +3149,10 @@ function buildCancelledAttemptResult(quiz, answersSnapshot = cloneAnswersSnapsho
       maxPoints,
       percent,
       date: at,
+      startedAt: state.attemptStartedAtLabel || "",
+      endedAt: at,
+      durationSeconds,
+      durationLabel: formatDurationFromSeconds(durationSeconds),
       questionResults
     },
     questionResults
@@ -2959,6 +3398,10 @@ async function refreshRemoteAttempts(options = {}) {
           maxPoints: data.total ?? 0,
           percent: data.percentual ?? 0,
           date: data.data,
+          startedAt: data.inicioAvaliacao || "",
+          endedAt: data.fimAvaliacao || data.data,
+          durationSeconds: Number(data.duracaoSegundos || 0),
+          durationLabel: data.duracaoTexto || "",
           questionResults: data.correcaoQuestoes || []
         },
         answers: data.respostas || {},
@@ -3021,7 +3464,7 @@ function renderHome() {
     const status = attempt?.status || (isRetakeReleased(quiz.id) ? "available" : "available");
     const statusLabel =
       status === "completed" ? "Concluído" :
-        status === "cancelled" ? "Cancelado" :
+        status === "cancelled" ? "Bloqueado" :
           "Disponível";
 
     signatureParts.push([
@@ -3124,7 +3567,12 @@ function renderHome() {
           if (!syncedAttempt?.result) {
             return;
           }
-          showResult(syncedAttempt.result, "Resultado carregado.");
+          if (syncedAttempt.status === "cancelled") {
+            const reason = syncedAttempt.cancelReason || "Avaliação bloqueada por violação de regras.";
+            showResult(syncedAttempt.result, "", { isBlocked: true, reason });
+          } else {
+            showResult(syncedAttempt.result, "");
+          }
           updateReviewButtons(quiz, syncedAttempt);
           showOnlyScreen("result");
         } else {
@@ -3219,6 +3667,10 @@ async function getRemoteAttemptForQuiz(quizId) {
         maxPoints: latest.total ?? 0,
         percent: latest.percentual ?? 0,
         date: latest.data,
+        startedAt: latest.inicioAvaliacao || "",
+        endedAt: latest.fimAvaliacao || latest.data,
+        durationSeconds: Number(latest.duracaoSegundos || 0),
+        durationLabel: latest.duracaoTexto || "",
         questionResults: latest.correcaoQuestoes || []
       },
       answers: latest.respostas || {},
@@ -3258,13 +3710,8 @@ async function openQuiz(quizId) {
   }
 
   if (!retakeReleased && attempt?.status === "cancelled") {
-    const base = attempt.cancelReason || "Questionário cancelado por violação de regras.";
-    if (!quiz.allowStudentReview) {
-      cancelMessage.innerHTML = getBlockedReviewNoteHtml(base);
-    } else {
-      cancelMessage.textContent = base;
-    }
-    showOnlyScreen("cancel");
+    const base = attempt.cancelReason || "Avaliação bloqueada por violação de regras.";
+    showResult(attempt.result, "", { isBlocked: true, reason: base });
     updateReviewButtons(quiz, attempt);
     return;
   }
@@ -3292,8 +3739,8 @@ async function openQuiz(quizId) {
     startRulesList.innerHTML =
       `<li>Não é possível voltar para questões anteriores.</li>` +
       `<li>As questões e alternativas são embaralhadas.</li>` +
-      `<li>Não recarregue a página e não troque de tela; isso cancela a avaliação.</li>` +
-      `<li>Ao cancelar o quiz, você perde o acesso à tentativa.</li>` +
+      `<li>Não recarregue a página e não troque de tela; isso bloqueia a avaliação.</li>` +
+      `<li>Ao bloquear o quiz, você perde o acesso à tentativa.</li>` +
       (isStartAllowed ? "" : "<li><strong>Início bloqueado pelo professor no momento.</strong></li>");
   }
 
@@ -3345,6 +3792,11 @@ async function showHome(options = {}) {
 
 function showOnlyScreen(screenName) {
   Object.values(screens).forEach((screen) => screen.classList.add("hidden"));
+  document.body.classList.toggle("quiz-mode", screenName === "quiz");
+
+  if (appHeader) {
+    appHeader.classList.toggle("hidden", screenName === "quiz");
+  }
 
   if (screenName) {
     homeScreen.classList.add("hidden");
@@ -3368,10 +3820,13 @@ function clearSessionState() {
   state.reviewBackScreen = "result";
   state.violationCount = 0;
   state.isViolationGraceActive = false;
+  state.attemptStartedAtMs = 0;
+  state.attemptStartedAtLabel = "";
   clearQuestionTimerState();
   clearViolationTimers();
   hidePolicyWarning();
   hideCancelModal();
+  applyZoomCounterScale();
 }
 
 function hideCancelModal() {
@@ -3402,10 +3857,10 @@ function updateNextButtonVisibility() {
   }
 
   const selected = questionForm?.querySelector("input[type='radio']:checked");
-  const shouldShow = Boolean(selected) && !state.timedOutQuestionId;
-  nextButton.classList.toggle("hidden", !shouldShow);
+  nextButton.classList.remove("hidden");
+  nextButton.disabled = !selected || Boolean(state.timedOutQuestionId);
   if (clearAnswerButton) {
-    clearAnswerButton.classList.toggle("hidden", !shouldShow);
+    clearAnswerButton.classList.remove("hidden");
   }
   // mark selected option visually
   if (questionForm) {
@@ -3423,16 +3878,29 @@ function clearQuestionTimerState() {
     clearInterval(window.questionTimerInterval);
     window.questionTimerInterval = null;
   }
+  clearQuestionAutoAdvanceState();
   if (questionInfoArea) {
     questionInfoArea.innerHTML = "";
   }
   if (questionForm) {
     questionForm.classList.remove("question-timeout-locked");
   }
-  nextButton.disabled = false;
+}
+
+function clearQuestionAutoAdvanceState() {
+  if (window.questionAutoAdvanceInterval) {
+    clearInterval(window.questionAutoAdvanceInterval);
+    window.questionAutoAdvanceInterval = null;
+  }
+  if (window.questionAutoAdvanceTimeout) {
+    clearTimeout(window.questionAutoAdvanceTimeout);
+    window.questionAutoAdvanceTimeout = null;
+  }
 }
 
 function advanceQuestion(options = {}) {
+  clearQuestionAutoAdvanceState();
+
   const quiz = getSelectedQuiz();
   if (!quiz) {
     return;
@@ -3484,9 +3952,9 @@ function handleQuestionTimerExpired(question) {
   questionForm.classList.add("question-timeout-locked");
 
   nextButton.disabled = true;
-  nextButton.classList.add("hidden");
+  nextButton.classList.remove("hidden");
   if (clearAnswerButton) {
-    clearAnswerButton.classList.add("hidden");
+    clearAnswerButton.classList.remove("hidden");
   }
 
   if (!questionInfoArea) {
@@ -3496,12 +3964,36 @@ function handleQuestionTimerExpired(question) {
 
   const notice = document.createElement("div");
   notice.className = "question-timeout-notice";
-  notice.innerHTML = `<p>${hasSelectedAnswer ? "O tempo desta questão acabou. Sua resposta foi registrada." : "O tempo desta questão acabou. Sua resposta não foi registrada."}</p><button type="button" class="btn btn-primary" id="question-timeout-next">Ir para a próxima questão</button>`;
-  `< p > ${hasSelectedAnswer ? "O tempo desta questão acabou. Sua resposta foi registrada." : "O tempo desta questão acabou. Sua resposta não foi registrada."}</p > <button type="button" class="btn btn-primary" id="question-timeout-next">Ir para a próxima questão</button>`;
+  notice.innerHTML = `
+    <p>${hasSelectedAnswer ? "O tempo desta questão acabou. Sua resposta foi registrada." : "O tempo desta questão acabou. Sua resposta não foi registrada."}</p>
+    <p class="question-timeout-autonext">indo para a próxima questão em <strong id="question-timeout-countdown">10</strong>s</p>
+    <button type="button" class="btn btn-primary" id="question-timeout-next">Ir para a próxima questão</button>
+  `;
   questionInfoArea.innerHTML = "";
   questionInfoArea.appendChild(notice);
 
   const timeoutButton = document.getElementById("question-timeout-next");
+  const timeoutCountdown = document.getElementById("question-timeout-countdown");
+  let remainingSeconds = 10;
+
+  window.questionAutoAdvanceInterval = setInterval(() => {
+    remainingSeconds -= 1;
+    if (timeoutCountdown) {
+      timeoutCountdown.textContent = String(Math.max(0, remainingSeconds));
+    }
+    if (remainingSeconds <= 0) {
+      clearInterval(window.questionAutoAdvanceInterval);
+      window.questionAutoAdvanceInterval = null;
+    }
+  }, 1000);
+
+  window.questionAutoAdvanceTimeout = setTimeout(() => {
+    window.questionAutoAdvanceTimeout = null;
+    if (state.timedOutQuestionId === question.id) {
+      advanceQuestion({ allowBlank: true });
+    }
+  }, 10000);
+
   if (timeoutButton) {
     timeoutButton.addEventListener("click", () => {
       advanceQuestion({ allowBlank: true });
@@ -3520,6 +4012,7 @@ function renderQuestionTimer(question) {
   const timerBox = document.createElement("div");
   timerBox.className = "question-timer";
   timerBox.innerHTML = `<span>Tempo restante</span> <strong>${timeLeft}s</strong>`;
+  timerBox.classList.toggle("question-timer-danger", timeLeft <= 10);
   questionInfoArea.appendChild(timerBox);
 
   window.questionTimerInterval = setInterval(() => {
@@ -3528,6 +4021,7 @@ function renderQuestionTimer(question) {
     if (strong) {
       strong.textContent = `${Math.max(0, timeLeft)} s`;
     }
+    timerBox.classList.toggle("question-timer-danger", timeLeft <= 10);
 
     if (timeLeft <= 0) {
       clearInterval(window.questionTimerInterval);
@@ -3556,18 +4050,21 @@ async function handleStartQuiz(event) {
 
   const enteredFullscreen = await requestFullscreenMode();
   if (!enteredFullscreen) {
-    alert("�? obrigatório permanecer em tela cheia para realizar o questionário.");
+    alert("E obrigatorio permanecer em tela cheia para realizar o questionario.");
     return;
   }
 
   clearSessionState();
   state.activeQuestions = buildShuffledQuestionSet(quiz);
   state.isActive = true;
+  state.attemptStartedAtMs = Date.now();
+  state.attemptStartedAtLabel = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  lockZoomForQuiz();
 
   await consumeRetakeRelease(quiz.id);
 
   showOnlyScreen("quiz");
-  cancelButton.classList.toggle("hidden", state.isTeacher);
+  cancelButton.classList.add("hidden");
   renderQuestion();
 }
 
@@ -3584,13 +4081,38 @@ function renderQuestion() {
     return;
   }
 
-  progress.textContent = `Questão ${state.currentQuestionIndex + 1} de ${activeQuestions.length} `;
+  progress.textContent = `Questao ${state.currentQuestionIndex + 1} de ${activeQuestions.length}`;
   questionTitle.textContent = question.title;
   questionDescription.textContent = question.description || "";
+
+  const existingImage = document.querySelector(".question-inline-image");
+  if (existingImage) {
+    existingImage.remove();
+  }
+
+  if (question.image) {
+    const imgEl = document.createElement("img");
+    imgEl.className = "question-inline-image";
+    imgEl.src = question.image;
+    imgEl.alt = "Imagem da questao";
+    imgEl.style.maxWidth = "100%";
+    imgEl.style.maxHeight = "300px";
+    imgEl.style.objectFit = "contain";
+    imgEl.style.borderRadius = "12px";
+    imgEl.style.marginTop = "12px";
+    imgEl.style.marginBottom = "12px";
+    imgEl.style.marginLeft = "auto";
+    imgEl.style.marginRight = "auto";
+    imgEl.style.display = "block";
+    questionDescription.parentNode.insertBefore(imgEl, questionForm);
+  }
+
   questionForm.innerHTML = "";
   renderQuestionTimer(question);
 
-  questionForm.classList.add("masked");
+  const alternativesVisibilityMode = quiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed";
+  const startsRevealed = alternativesVisibilityMode === "revealed";
+  questionForm.classList.toggle("masked", !startsRevealed);
   question.options.forEach((option) => {
     const id = `${question.id} -${option.value} `;
     const label = document.createElement("label");
@@ -3606,6 +4128,9 @@ function renderQuestion() {
     input.checked = state.answers[question.id] === option.value;
     input.addEventListener("change", () => {
       state.answers[question.id] = input.value;
+      if (startsRevealed) {
+        questionForm.classList.add("masked");
+      }
       updateNextButtonVisibility();
     });
 
@@ -3657,6 +4182,10 @@ function renderQuestion() {
     label.appendChild(content);
     questionForm.appendChild(label);
   });
+
+  if (startsRevealed && state.answers[question.id]) {
+    questionForm.classList.add("masked");
+  }
 
   updateNextButtonVisibility();
 
@@ -3752,6 +4281,7 @@ async function finishQuiz() {
   hidePolicyWarning();
 
   result.questionResults = questionResults;
+  attachAttemptTimingMetadata(result, at);
 
   saveStoredAttempt(quiz.id, {
     status: "completed",
@@ -3771,13 +4301,28 @@ async function finishQuiz() {
   updateReviewButtons(quiz, { status: "completed", result, answers: answersSnapshot, questionResults });
 }
 
-function showResult(result, detailsText) {
-  resultStudentName.textContent = result.studentName;
+function showResult(result, detailsText, options = {}) {
+  const safe = {
+    studentName: "-",
+    quizTitle: "-",
+    quizId: "-",
+    earnedPoints: 0,
+    maxPoints: 0,
+    percent: 0,
+    date: "",
+    ...result
+  };
+  const isBlocked = Boolean(options.isBlocked);
+  const blockedReason = String(options.reason || "").trim();
+  const endedAt = safe.endedAt || safe.date || "-";
+  const durationLabel = safe.durationLabel || formatDurationFromSeconds(safe.durationSeconds || 0);
+
+  resultStudentName.textContent = safe.studentName;
   if (resultQuizTitle) {
-    resultQuizTitle.textContent = `Avaliação: ${result.quizTitle || result.quizId || "-"}`;
+    resultQuizTitle.textContent = `Avaliação: ${safe.quizTitle || safe.quizId || "-"}`;
   }
-  resultScore.textContent = `${result.earnedPoints} / ${result.maxPoints}`;
-  resultPercent.textContent = `${result.percent}% de acertos`;
+  resultScore.textContent = `${safe.earnedPoints} / ${safe.maxPoints}`;
+  resultPercent.textContent = `${safe.percent}% de acertos`;
   const quiz = getSelectedQuiz();
 
   const prevDisabled = document.getElementById("result-review-disabled");
@@ -3790,7 +4335,41 @@ function showResult(result, detailsText) {
     existingNote.remove();
   }
 
-  resultDetails.textContent = detailsText || "";
+  resultDetails.innerHTML = "";
+
+  const sectionLabel = document.createElement("p");
+  sectionLabel.className = "result-meta-line result-meta-line-key";
+  sectionLabel.textContent = "Resumo da tentativa";
+  resultDetails.appendChild(sectionLabel);
+
+  const statusLine = document.createElement("p");
+  statusLine.className = "result-meta-line result-meta-line-strong";
+  statusLine.textContent = isBlocked ? "Status: Avaliação bloqueada" : "Status: Avaliação concluída";
+  resultDetails.appendChild(statusLine);
+
+  const endLine = document.createElement("p");
+  endLine.className = "result-meta-line";
+  endLine.textContent = `Término: ${endedAt}`;
+  resultDetails.appendChild(endLine);
+
+  const durationLine = document.createElement("p");
+  durationLine.className = "result-meta-line";
+  durationLine.textContent = `Duração: ${durationLabel}`;
+  resultDetails.appendChild(durationLine);
+
+  if (isBlocked && blockedReason) {
+    const reasonLine = document.createElement("p");
+    reasonLine.className = "result-meta-line result-meta-line-highlight";
+    reasonLine.textContent = `Motivo do bloqueio: ${blockedReason}`;
+    resultDetails.appendChild(reasonLine);
+  }
+
+  if (detailsText) {
+    const detailsLine = document.createElement("p");
+    detailsLine.className = "result-meta-line";
+    detailsLine.textContent = `Observação: ${detailsText}`;
+    resultDetails.appendChild(detailsLine);
+  }
 
   if (quiz && !quiz.allowStudentReview) {
     const note = document.createElement("p");
@@ -3879,8 +4458,7 @@ async function cancelQuiz(reason, options = {}) {
   });
 
   if (!options.skipScreen) {
-    cancelMessage.textContent = reason;
-    showOnlyScreen("cancel");
+    showResult(result, "", { isBlocked: true, reason });
     updateReviewButtons(quiz, { status: "cancelled", result, answers: answersSnapshot, questionResults });
   }
 
@@ -3948,6 +4526,10 @@ async function saveCancelledAttemptToFirestore(quiz, cancellation) {
     total: result.maxPoints,
     percentual: result.percent,
     data: result.date,
+    inicioAvaliacao: result.startedAt || "",
+    fimAvaliacao: result.endedAt || result.date || cancellation.at || "",
+    duracaoSegundos: Number(result.durationSeconds || 0),
+    duracaoTexto: result.durationLabel || formatDurationFromSeconds(result.durationSeconds || 0),
     status: "cancelled",
     bloqueadoPorViolacao: Boolean(cancellation.blockedByViolation),
     motivoCancelamento: cancellation.reason || "",
@@ -3979,6 +4561,10 @@ async function saveCancelledAttemptToFirestore(quiz, cancellation) {
       maxPoints: result.maxPoints,
       percent: result.percent,
       date: result.date,
+      startedAt: result.startedAt || "",
+      endedAt: result.endedAt || result.date || "",
+      durationSeconds: Number(result.durationSeconds || 0),
+      durationLabel: result.durationLabel || formatDurationFromSeconds(result.durationSeconds || 0),
       questionResults
     },
     answers: answersSnapshot,
@@ -4025,6 +4611,10 @@ function saveAttemptToFirestore(quiz, result, answers, questionResults = []) {
     total: result.maxPoints,
     percentual: result.percent,
     data: result.date,
+    inicioAvaliacao: result.startedAt || "",
+    fimAvaliacao: result.endedAt || result.date || "",
+    duracaoSegundos: Number(result.durationSeconds || 0),
+    duracaoTexto: result.durationLabel || formatDurationFromSeconds(result.durationSeconds || 0),
     status: "completed",
     bloqueadoPorViolacao: false,
     motivoCancelamento: "",
@@ -4051,13 +4641,50 @@ function isFullscreenActive() {
   return Boolean(document.fullscreenElement);
 }
 
+let _zoomWatchMQ = null;
+let _zoomWatchHandler = null;
+
+function registerZoomWatch() {
+  if (_zoomWatchMQ && _zoomWatchHandler) {
+    _zoomWatchMQ.removeEventListener("change", _zoomWatchHandler);
+  }
+  const mqString = `(resolution: ${window.devicePixelRatio}dppx)`;
+  _zoomWatchMQ = window.matchMedia(mqString);
+  _zoomWatchHandler = () => {
+    applyZoomCounterScale();
+    registerZoomWatch();
+  };
+  _zoomWatchMQ.addEventListener("change", _zoomWatchHandler);
+}
+
+function applyZoomCounterScale() {
+  if (!quizScreen) return;
+  if (!state.isActive || state.isTeacher) {
+    quizScreen.style.transform = "";
+    return;
+  }
+  const zoomFactor = window.devicePixelRatio / (state.baselineDPR || window.devicePixelRatio);
+  if (Math.abs(zoomFactor - 1) < 0.02) {
+    quizScreen.style.transform = "";
+    return;
+  }
+  quizScreen.style.transform = `scale(${1 / zoomFactor})`;
+  quizScreen.style.transformOrigin = "top center";
+}
+
+function lockZoomForQuiz() {
+  state.baselineDPR = window.devicePixelRatio;
+  registerZoomWatch();
+  applyZoomCounterScale();
+}
+
 function handlePolicyViolation() {
   if (!state.isActive || state.isTeacher || state.isViolationGraceActive) {
     return;
   }
 
   if (state.violationCount >= 2) {
-    cancelQuiz("Questionário cancelado após múltiplas violações das regras.", { blockedByViolation: true });
+    cancelQuiz("Questionário bloqueado após múltiplas violações das regras.", { blockedByViolation: true });
     return;
   }
 
@@ -4071,7 +4698,7 @@ function handlePolicyViolation() {
   state.violationIntervalId = setInterval(updatePolicyCountdown, 100);
   state.violationTimeoutId = setTimeout(() => {
     if (state.isActive && state.isViolationGraceActive) {
-      cancelQuiz("Questionário cancelado porque você não retornou em até 10 segundos.", { blockedByViolation: true });
+      cancelQuiz("Questionário bloqueado porque você não retornou em até 10 segundos.", { blockedByViolation: true });
     }
   }, 10000);
 }
@@ -4141,7 +4768,7 @@ function updatePolicyCountdown() {
   policyCountdown.textContent = String(Math.ceil(remainingMs / 1000));
 
   if (remainingMs === 0 && state.isViolationGraceActive) {
-    cancelQuiz("Questionário cancelado porque você não retornou em até 10 segundos.", { blockedByViolation: true });
+    cancelQuiz("Questionário bloqueado porque você não retornou em até 10 segundos.", { blockedByViolation: true });
   }
 }
 
@@ -4180,4 +4807,5 @@ function clearValidationMessage() {
     existing.remove();
   }
 }
+
 
