@@ -138,6 +138,13 @@
               <option value="20 min">20 minutos</option>
             </select>
           </label>
+          <label class="builder-field-label" for="builder-alternatives-visibility">
+            Visualização das alternativas
+            <select id="builder-alternatives-visibility" required>
+              <option value="hidden">Ocultas</option>
+              <option value="revealed" selected>Reveladas no início (padrão)</option>
+            </select>
+          </label>
         </div>
 
         <div id="builder-questions" class="builder-questions"></div>
@@ -173,7 +180,7 @@
       <div id="quiz-content">
         <div class="quiz-head">
           <p id="progress" class="progress-text">Questão 1 de 1</p>
-          <button id="cancel-button" class="btn btn-ghost" type="button">Cancelar</button>
+          <button id="cancel-button" class="btn btn-ghost" type="button">Bloquear</button>
         </div>
 
         <h2 id="question-title">Pergunta</h2>
@@ -182,7 +189,7 @@
         <form id="question-form" class="answers-list" autocomplete="off"></form>
 
         <div class="quiz-actions">
-          <button id="clear-answer-button" type="button" class="btn btn-ghost hidden">Limpar</button>
+          <button id="clear-answer-button" type="button" class="btn btn-ghost">Limpar</button>
           <button id="next-button" type="button" class="btn btn-primary">Próxima</button>
         </div>
       </div>
@@ -197,10 +204,10 @@
 
       <div id="cancel-modal" class="modal-overlay hidden" role="dialog" aria-modal="true">
         <div class="modal-card">
-          <h3 id="cancel-modal-title">Cancelar questionário?</h3>
-          <p id="cancel-modal-text">Se você cancelar, não terá mais acesso a este quiz.</p>
+          <h3 id="cancel-modal-title">Bloquear avaliação?</h3>
+          <p id="cancel-modal-text">Se você bloquear, não terá mais acesso a este quiz.</p>
           <div class="modal-actions">
-            <button id="cancel-modal-confirm" class="btn btn-danger-soft" type="button">Sim, cancelar</button>
+            <button id="cancel-modal-confirm" class="btn btn-danger-soft" type="button">Sim, bloquear</button>
             <button id="cancel-modal-cancel" class="btn btn-ghost" type="button">Não, voltar</button>
           </div>
         </div>
@@ -208,7 +215,7 @@
     </section>
 
     <section id="cancel-screen" class="card hidden">
-      <h2>Questionário cancelado</h2>
+      <h2>Avaliação bloqueada</h2>
       <p id="cancel-message"></p>
       <div class="result-actions">
         <button type="button" id="cancel-review-button" class="btn btn-ghost hidden">Ver resumo da avaliação</button>
@@ -221,7 +228,7 @@
         Você já realizou este questionário. Este é o resultado anterior.
       </p>
       <h2>Resultado final</h2>
-      <p class="result-details" id="result-quiz-title">Avaliação: -</p>
+      <p id="result-quiz-title">Avaliação: -</p>
       <p class="result-name">Aluno(a): <strong id="result-student-name">-</strong></p>
       <p class="result-score" id="result-score">0 / 0</p>
       <p class="result-percent" id="result-percent">0%</p>
@@ -232,6 +239,31 @@
         <button id="result-back-home-button" class="btn btn-ghost" type="button">Voltar para a home</button>
       </div>
     </section>
+
+    <!-- Modal: Relatório de Turma -->
+    <div id="classroom-report-modal" class="modal-overlay hidden classroom-report-modal-overlay" role="dialog"
+      aria-modal="true" aria-labelledby="classroom-report-title">
+      <div class="modal-card classroom-report-card">
+        <div class="classroom-report-header">
+          <h3 id="classroom-report-title">Relatório da Turma</h3>
+          <button id="classroom-report-close" class="btn btn-ghost btn-sm" type="button" aria-label="Fechar">✕</button>
+        </div>
+
+        <div id="classroom-report-quiz-select-area" class="classroom-report-quiz-select-area">
+          <label class="builder-field-label" for="classroom-report-quiz-select">
+            Selecione o quiz
+            <select id="classroom-report-quiz-select">
+              <option value="">-- Selecione um quiz --</option>
+            </select>
+          </label>
+          <button id="classroom-report-refresh" class="btn btn-ghost btn-sm cr-refresh-btn" type="button"
+            title="Atualizar relatório">↻ Atualizar</button>
+        </div>
+
+        <div id="classroom-report-loading" class="classroom-report-loading hidden">Carregando relatório...</div>
+        <div id="classroom-report-body" class="classroom-report-body hidden"></div>
+      </div>
+    </div>
 
     <section id="review-screen" class="card hidden">
       <h2>Resumo da avaliação</h2>
@@ -248,6 +280,7 @@
     import { getFirestore, setDoc, doc, getDoc, collection, query, where, limit, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-firestore.js";
     import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-functions.js";
     import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-auth.js";
+    import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/12.12.0/firebase-storage.js";
 
     const firebaseConfig = {
       apiKey: "AIzaSyDC3-AZjvPicYC3PNrr6zqtPmkNeOmt_gI",
@@ -261,6 +294,11 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
     const functions = getFunctions(app);
+    const storage = getStorage(app);
+    window.firebaseStorage = storage;
+    window.firebaseRef = ref;
+    window.firebaseUploadBytes = uploadBytes;
+    window.firebaseGetDownloadURL = getDownloadURL;
     const auth = getAuth(app);
     const googleProvider = new GoogleAuthProvider();
 
