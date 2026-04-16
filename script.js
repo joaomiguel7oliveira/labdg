@@ -6,10 +6,14 @@ const state = {
   classroomName: "",
   classrooms: [],
   classroomStudents: {},
+  teacherResultsClassroomFilter: "",
+  teacherResultsStudentSearch: "",
   customQuizzes: [],
   quizPosts: [],
   quizConfigs: {},
+  nonogramTemplatesByQuiz: {},
   remoteAttemptsByQuiz: {},
+  remoteAttemptCountsByQuiz: {},
   remoteAttemptsLoaded: false,
   retakeReleases: {},
   selectedQuizId: null,
@@ -31,12 +35,56 @@ const state = {
   violationDeadline: 0,
   attemptStartedAtMs: 0,
   attemptStartedAtLabel: "",
-  baselineDPR: 1
+  baselineDPR: 1,
+  skipQuestionUsesRemaining: 3,
+  builderDraftGeneratedWithAi: false,
+  builderDraftAiPrompt: ""
 };
 
 let pendingModalAction = null;
 let lastHomeRenderSignature = "";
 let lastContextMenuBlockedAt = 0;
+let focusWaitPenaltyInFlight = false;
+let lastFocusWaitPenaltyAt = 0;
+let focusWaitGraceTimeoutId = null;
+let focusWaitGraceIntervalId = null;
+let focusWaitGraceDeadlineMs = 0;
+let focusWaitGraceReason = "";
+
+const FOCUS_WAIT_PROCESS_NAME = "Espera em Foco da Turma";
+const FOCUS_WAIT_RELEASE_BUTTON_LABEL = "Liberar modo de espera";
+const WAIT_NONOGRAM_LOBBY_PREFIX = "labdg-nonogram";
+const WAIT_NONOGRAM_GRID_SIZE = 8;
+const NONOGRAM_TEMPLATE_GLOBAL_KEY = "global";
+const NONOGRAM_DRAWING_SUGGESTIONS = ["Foguete", "Arvore", "Carro", "Gato", "Peixe", "Coroa", "Flor", "Lapis"];
+
+const waitNonogramState = {
+  active: false,
+  quizId: "",
+  lobbyKey: "",
+  dateKey: "",
+  puzzleIndex: 0,
+  size: WAIT_NONOGRAM_GRID_SIZE,
+  solution: [],
+  marks: [],
+  rowClues: [],
+  colClues: [],
+  errors: 0,
+  roundScore: 0,
+  totalScore: 0,
+  solvedCount: 0,
+  roundCounted: false,
+  score: 0,
+  progress: 0,
+  teacherRevealMode: false,
+  level: 1,
+  currentPuzzleName: "",
+  creatorName: "",
+  creatorMatrix: [],
+  completed: false,
+  submitted: false,
+  autoAdvanceTimeoutId: null
+};
 
 const authScreen = document.getElementById("auth-screen");
 const bootScreen = document.getElementById("boot-screen");
@@ -53,6 +101,7 @@ const homeHeaderButton = document.getElementById("home-header-button");
 const teacherPanelButton = document.getElementById("teacher-panel-button");
 const teacherClassroomsButton = document.getElementById("teacher-classrooms-button");
 const teacherBuilderButton = document.getElementById("teacher-builder-button");
+const teacherNonogramEditorButton = document.getElementById("teacher-nonogram-editor-button");
 const teacherRefreshButton = document.getElementById("teacher-refresh-button");
 const teacherUsersList = document.getElementById("teacher-users-list");
 const teacherMessage = document.getElementById("teacher-message");
@@ -61,13 +110,26 @@ const builderForm = document.getElementById("builder-form");
 function getPendingUnloadKey() {
   return `quiz_pending_unload_cancellation_${state.user?.uid || "anon"}`;
 }
+
+function getPendingFocusWaitPenaltyKey() {
+  return `quiz_pending_focus_wait_penalty_${state.user?.uid || "anon"}`;
+}
 const builderTitleInput = document.getElementById("builder-title");
 const builderDescriptionInput = document.getElementById("builder-description");
+const builderAiPromptInput = document.getElementById("builder-ai-prompt");
+const builderAiApiKeyInput = document.getElementById("builder-ai-api-key");
+const builderAiQuestionCountInput = document.getElementById("builder-ai-question-count");
+const builderAiDifficultyInput = document.getElementById("builder-ai-difficulty");
+const builderAiSchoolLevelInput = document.getElementById("builder-ai-school-level");
+const builderAiGenerateButton = document.getElementById("builder-ai-generate-button");
+const builderAiMessage = document.getElementById("builder-ai-message");
 const builderDurationInput = document.getElementById("builder-duration");
 const builderAlternativesVisibilityInput = document.getElementById("builder-alternatives-visibility");
+const builderMaxAttemptsInput = document.getElementById("builder-max-attempts");
 const builderQuestions = document.getElementById("builder-questions");
 const builderAddQuestionButton = document.getElementById("builder-add-question-button");
 const builderMessage = document.getElementById("builder-message");
+const GEMINI_API_KEY_STORAGE_KEY = "labdg_gemini_api_key";
 const logoutButton = document.getElementById("logout-button");
 const authGoogleBtn = document.getElementById("auth-google");
 const authMessage = document.getElementById("auth-message");
@@ -119,6 +181,7 @@ const policyChancesText = document.getElementById("policy-chances-text");
 const policyReturnButton = document.getElementById("policy-return-button");
 const nextButton = document.getElementById("next-button");
 const clearAnswerButton = document.getElementById("clear-answer-button");
+const skipQuestionButton = document.getElementById("skip-question-button");
 const cancelButton = document.getElementById("cancel-button");
 const cancelModal = document.getElementById("cancel-modal");
 const cancelModalTitle = document.getElementById("cancel-modal-title");
@@ -176,6 +239,9 @@ if (clearAnswerButton) {
     clearValidationMessage();
     updateNextButtonVisibility();
   });
+}
+if (skipQuestionButton) {
+  skipQuestionButton.addEventListener("click", handleSkipQuestion);
 }
 cancelButton.addEventListener("click", () => {
   openActionModal({
@@ -294,6 +360,18 @@ if (homeHeaderButton) {
 if (builderAddQuestionButton) {
   builderAddQuestionButton.addEventListener("click", () => addBuilderQuestionCard());
 }
+if (builderAiGenerateButton) {
+  builderAiGenerateButton.addEventListener("click", handleBuilderGenerateWithAi);
+}
+if (builderAiApiKeyInput) {
+  const savedApiKey = getStoredGeminiApiKey();
+  if (savedApiKey) {
+    builderAiApiKeyInput.value = savedApiKey;
+  }
+  builderAiApiKeyInput.addEventListener("change", () => {
+    setStoredGeminiApiKey(builderAiApiKeyInput.value || "");
+  });
+}
 
 profileForm.addEventListener("submit", handleProfileSubmit);
 
@@ -384,6 +462,16 @@ if (teacherBuilderButton) {
   });
 }
 
+if (teacherNonogramEditorButton) {
+  teacherNonogramEditorButton.addEventListener("click", () => {
+    if (!state.isTeacher) {
+      alert("Acesso negado ao editor de nonograma.");
+      return;
+    }
+    openHomeNonogramEditorModal();
+  });
+}
+
 logoutButton.addEventListener("click", async () => {
   if (state.isActive && getSelectedQuiz()) {
     if (state.isTeacher) {
@@ -436,6 +524,15 @@ quizSearch.addEventListener("input", renderHome);
 document.addEventListener("visibilitychange", () => {
   if (state.isActive && !state.isTeacher && document.visibilityState !== "visible") {
     handlePolicyViolation();
+    return;
+  }
+
+  if (!state.isTeacher && document.visibilityState !== "visible") {
+    triggerFocusWaitGrace("Troca de aba ou minimização da página antes da liberação do professor.");
+  }
+
+  if (!state.isTeacher && document.visibilityState === "visible" && isFocusWaitModeActive() && !isFullscreenActive()) {
+    triggerFocusWaitGrace("O modo foco exige tela cheia até o professor liberar o modo de espera.");
   }
 });
 
@@ -443,6 +540,11 @@ window.addEventListener("blur", () => {
   setTimeout(() => {
     if (state.isActive && !state.isTeacher && !document.hasFocus()) {
       handlePolicyViolation();
+      return;
+    }
+
+    if (!state.isTeacher && !document.hasFocus()) {
+      triggerFocusWaitGrace("Perda de foco da janela antes da liberação do professor.");
     }
   }, 0);
 });
@@ -450,6 +552,16 @@ window.addEventListener("blur", () => {
 document.addEventListener("fullscreenchange", () => {
   if (state.isActive && !state.isTeacher && !isFullscreenActive()) {
     handlePolicyViolation();
+    return;
+  }
+
+  if (!state.isTeacher && isFocusWaitModeActive() && !isFullscreenActive()) {
+    triggerFocusWaitGrace("Você saiu da tela cheia durante o modo foco.");
+    return;
+  }
+
+  if (isFocusWaitGraceActive() && isFocusWaitRecoverySatisfied()) {
+    resolveFocusWaitGraceWithoutPenalty();
   }
 });
 
@@ -460,6 +572,10 @@ document.addEventListener("wheel", (e) => {
 }, { passive: false });
 
 document.addEventListener("keydown", (e) => {
+  if (tryHandleReloadShortcut(e)) {
+    return;
+  }
+
   if (state.isActive && !state.isTeacher && e.ctrlKey) {
     if (["=", "+", "-", "_", "0"].includes(e.key)) {
       e.preventDefault();
@@ -481,13 +597,18 @@ document.addEventListener("contextmenu", (event) => {
 });
 
 window.addEventListener("beforeunload", (event) => {
-  if (!state.isActive || state.isTeacher || !getSelectedQuiz()) {
+  if (state.isTeacher) {
     return;
   }
 
-  persistUnloadCancellation();
-  event.preventDefault();
-  event.returnValue = "";
+  if (state.isActive && getSelectedQuiz()) {
+    // Browser-native beforeunload dialogs pause JS execution, freezing timers.
+    // Persist cancellation and allow unload without opening the native prompt.
+    persistUnloadCancellation();
+    return;
+  }
+
+  persistFocusWaitPenaltyOnUnload();
 });
 
 document.addEventListener("DOMContentLoaded", initializeAuth);
@@ -977,6 +1098,10 @@ function savePendingUnloadCancellation(payload) {
   localStorage.setItem(getPendingUnloadKey(), JSON.stringify(payload));
 }
 
+function savePendingFocusWaitPenalty(payload) {
+  localStorage.setItem(getPendingFocusWaitPenaltyKey(), JSON.stringify(payload));
+}
+
 function readPendingUnloadCancellation() {
   const key = getPendingUnloadKey();
   const raw = localStorage.getItem(key);
@@ -991,8 +1116,26 @@ function readPendingUnloadCancellation() {
   }
 }
 
+function readPendingFocusWaitPenalty() {
+  const key = getPendingFocusWaitPenaltyKey();
+  const raw = localStorage.getItem(key);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 function clearPendingUnloadCancellation() {
   localStorage.removeItem(getPendingUnloadKey());
+}
+
+function clearPendingFocusWaitPenalty() {
+  localStorage.removeItem(getPendingFocusWaitPenaltyKey());
 }
 
 function consumePendingUnloadCancellation() {
@@ -1104,6 +1247,7 @@ async function refreshQuizConfigs(options = {}) {
       nextMap[docSnap.id] = {
         allowStudentReview: Boolean(data.allowStudentReview),
         allowStudentStart: Boolean(data.allowStudentStart),
+        allowFocusExitAfterFinish: Boolean(data.allowFocusExitAfterFinish),
         hidden: Boolean(data.hidden)
       };
     });
@@ -1267,6 +1411,7 @@ function getAllQuizzes() {
         ...quiz,
         allowStudentReview: cfg.allowStudentReview ?? Boolean(quiz.allowStudentReview),
         allowStudentStart: cfg.allowStudentStart ?? Boolean(quiz.allowStudentStart),
+        allowFocusExitAfterFinish: cfg.allowFocusExitAfterFinish ?? Boolean(quiz.allowFocusExitAfterFinish),
         hidden: cfg.hidden ?? false
       };
     })
@@ -1383,7 +1528,11 @@ function gradeQuizAttemptObfuscated(quiz, answersSnapshot, at) {
       correctLabel: correctOption ? String(correctOption.label || "") : "",
       isCorrect,
       // include options for review rendering
-      options: options.map(opt => ({ value: String(opt.value), label: String(opt.label || "") }))
+      questionExplanation: String(question?.explanation || ""),
+      options: options.map((opt) => ({
+        value: String(opt.value),
+        label: String(opt.label || "")
+      }))
     };
   });
 
@@ -1442,6 +1591,7 @@ function normalizeCustomQuiz(rawQuiz, docId) {
         type: "single-choice",
         title: question.title,
         description: question.description || "Selecione apenas uma alternativa.",
+        explanation: String(question.explanation || question.questionExplanation || question.justification || question.justificativa || ""),
         points: Number(question.points || 1),
         timer: Number(question.timer || 0),
         options,
@@ -1460,9 +1610,13 @@ function normalizeCustomQuiz(rawQuiz, docId) {
     title: rawQuiz.title,
     description: rawQuiz.description || "",
     duration: rawQuiz.duration || "10 min",
+    maxAttempts: Math.max(1, Number.parseInt(rawQuiz.maxAttempts, 10) || 1),
     alternativesVisibilityMode: rawQuiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed",
     allowStudentReview: Boolean(rawQuiz.allowStudentReview),
     allowStudentStart: rawQuiz.allowStudentStart !== false,
+    allowFocusExitAfterFinish: Boolean(rawQuiz.allowFocusExitAfterFinish),
+    aiGenerationPrompt: String(rawQuiz.aiGenerationPrompt || rawQuiz.aiPrompt || rawQuiz.generationPrompt || "").trim(),
+    aiGenerationProvider: String(rawQuiz.aiGenerationProvider || "").trim(),
     questions: normalizedQuestions,
     isCustom: true
   };
@@ -1477,10 +1631,12 @@ function buildPostedQuizFromPost(rawPost, docId) {
     title: rawPost.title,
     description: rawPost.description,
     duration: rawPost.duration,
+    maxAttempts: rawPost.maxAttempts,
     alternativesVisibilityMode: rawPost.alternativesVisibilityMode,
     questions: rawPost.questions,
     allowStudentReview: rawPost.allowStudentReview,
-    allowStudentStart: rawPost.allowStudentStart
+    allowStudentStart: rawPost.allowStudentStart,
+    allowFocusExitAfterFinish: rawPost.allowFocusExitAfterFinish
   }, String(rawPost.quizId || docId));
 
   if (!normalized) {
@@ -1682,10 +1838,12 @@ async function postQuizToClassroom(quizId, classroomId) {
       title: quiz.title,
       description: quiz.description,
       duration: quiz.duration,
+      maxAttempts: Math.max(1, Number.parseInt(quiz.maxAttempts, 10) || 1),
       alternativesVisibilityMode: quiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed",
       questions: quiz.questions,
       allowStudentReview: Boolean(quiz.allowStudentReview),
       allowStudentStart: true,
+      allowFocusExitAfterFinish: Boolean(quiz.allowFocusExitAfterFinish),
       ativo: true,
       publicadoEmIso: new Date().toISOString(),
       publicadoPorUid: state.user?.uid || "",
@@ -1785,6 +1943,33 @@ async function toggleQuizStart(quizId) {
   } catch (error) {
     console.error("Erro ao atualizar liberação de início do quiz:", error);
     alert("Não foi possível atualizar a liberação de início do quiz.");
+  }
+}
+
+async function toggleQuizFocusExitRelease(quizId) {
+  if (!state.isTeacher) {
+    return;
+  }
+
+  const quiz = getAllQuizzes().find((item) => item.id === quizId);
+  if (!quiz) {
+    return;
+  }
+
+  const nextValue = !Boolean(quiz.allowFocusExitAfterFinish);
+
+  try {
+    await setQuizConfig(quizId, { allowFocusExitAfterFinish: nextValue, hidden: false });
+    await refreshQuizConfigs({ render: false });
+    await refreshCustomQuizzes();
+    if (nextValue) {
+      showBottomNotice(`${FOCUS_WAIT_PROCESS_NAME}: alunos podem sair do foco sem penalidade neste quiz.`, "success", 3600);
+    } else {
+      showBottomNotice(`${FOCUS_WAIT_PROCESS_NAME}: modo de espera reativado e penalidade voltou a valer até nova liberação.`, "info", 3800);
+    }
+  } catch (error) {
+    console.error("Erro ao atualizar liberação do modo de espera:", error);
+    alert("Não foi possível atualizar a liberação do modo de espera.");
   }
 }
 
@@ -2126,6 +2311,9 @@ function showAuthenticatedUI() {
   if (teacherBuilderButton) {
     teacherBuilderButton.classList.add("hidden");
   }
+  if (teacherNonogramEditorButton) {
+    teacherNonogramEditorButton.classList.add("hidden");
+  }
   logoutButton.classList.remove("hidden");
 
   const display = state.studentName || state.user.displayName || state.user.email || "Usuário";
@@ -2138,6 +2326,9 @@ function showAuthenticatedUI() {
   renderHome();
   flushPendingUnloadCancellation().catch((error) => {
     console.error("Erro ao processar cancelamento pendente:", error);
+  });
+  flushPendingFocusWaitPenalty().catch((error) => {
+    console.error("Erro ao processar penalidade pendente de espera em foco:", error);
   });
   refreshTeacherAccess({ render: false })
     .then(() => Promise.allSettled([
@@ -2167,6 +2358,7 @@ function showUnauthenticatedUI() {
   state.quizPosts = [];
   state.quizConfigs = {};
   state.remoteAttemptsByQuiz = {};
+  state.remoteAttemptCountsByQuiz = {};
   state.remoteAttemptsLoaded = false;
   state.retakeReleases = {};
   authScreen.classList.remove("hidden");
@@ -2190,8 +2382,12 @@ function showUnauthenticatedUI() {
   if (teacherBuilderButton) {
     teacherBuilderButton.classList.add("hidden");
   }
+  if (teacherNonogramEditorButton) {
+    teacherNonogramEditorButton.classList.add("hidden");
+  }
   logoutButton.classList.add("hidden");
   showOnlyScreen(null);
+  renderFocusWaitPersistentNotice();
 }
 
 async function refreshTeacherAccess(options = {}) {
@@ -2203,6 +2399,9 @@ async function refreshTeacherAccess(options = {}) {
   }
   if (teacherBuilderButton) {
     teacherBuilderButton.classList.add("hidden");
+  }
+  if (teacherNonogramEditorButton) {
+    teacherNonogramEditorButton.classList.add("hidden");
   }
 
   if (!state.user?.email || !window.firebaseDoc || !window.firebaseGetDoc || !window.firebaseDB) {
@@ -2236,6 +2435,9 @@ async function refreshTeacherAccess(options = {}) {
       }
       if (teacherBuilderButton) {
         teacherBuilderButton.classList.remove("hidden");
+      }
+      if (teacherNonogramEditorButton) {
+        teacherNonogramEditorButton.classList.remove("hidden");
       }
     }
 
@@ -2387,8 +2589,12 @@ async function releaseQuizForStudent(slug, quizId) {
     if (state.user && state.profileSlug === slug) {
       const storageKey = getStorageKey(quizId);
       localStorage.removeItem(storageKey);
+      setStoredAttemptCount(quizId, 0);
       if (state.remoteAttemptsByQuiz) {
         delete state.remoteAttemptsByQuiz[quizId];
+      }
+      if (state.remoteAttemptCountsByQuiz) {
+        state.remoteAttemptCountsByQuiz[quizId] = 0;
       }
     }
 
@@ -2435,6 +2641,9 @@ async function loadLatestAttemptBySlugQuiz(slug, quizId) {
       status: latest.status || "completed",
       cancelReason: latest.motivoCancelamento || "",
       blockedByViolation: Boolean(latest.bloqueadoPorViolacao),
+      focusExitPenaltyApplied: Boolean(latest.penalidadeSaidaFoco),
+      focusExitPenaltyReason: String(latest.penalidadeSaidaFocoMotivo || ""),
+      focusExitPenaltyAt: String(latest.penalidadeSaidaFocoEm || ""),
       result: {
         quizId: latest.quizId,
         quizTitle: latest.quizTitulo,
@@ -2447,7 +2656,10 @@ async function loadLatestAttemptBySlugQuiz(slug, quizId) {
         endedAt: latest.fimAvaliacao || latest.data,
         durationSeconds: Number(latest.duracaoSegundos || 0),
         durationLabel: latest.duracaoTexto || "",
-        questionResults: latest.correcaoQuestoes || []
+        questionResults: latest.correcaoQuestoes || [],
+        focusExitPenaltyApplied: Boolean(latest.penalidadeSaidaFoco),
+        focusExitPenaltyReason: String(latest.penalidadeSaidaFocoMotivo || ""),
+        focusExitPenaltyAt: String(latest.penalidadeSaidaFocoEm || "")
       },
       answers: latest.respostas || {},
       questionResults: latest.correcaoQuestoes || []
@@ -2480,6 +2692,7 @@ function openTeacherAttemptReview(attempt) {
     questions: storedQuestionResults.map((item, index) => ({
       id: String(item?.questionId || `q${index + 1}`),
       title: String(item?.questionTitle || `Questão ${index + 1}`),
+      explanation: String(item?.questionExplanation || ""),
       options: Array.isArray(item?.options) ? item.options : []
     }))
   };
@@ -2498,6 +2711,7 @@ function openTeacherAttemptReview(attempt) {
       const statusClass = item.isCorrect ? "review-card-correct" : (item.selectedValue ? "review-card-wrong" : "review-card-blank");
       const statusText = item.selectedValue ? (item.isCorrect ? "Acertou" : "Errou") : "Em branco";
       const allOptionsHtml = renderReviewOptionsHtml(quiz, item, index);
+      const questionExplanation = getReviewExplanationForQuestion(quiz, item, index);
 
       return `
         <article class="builder-question-card review-card ${statusClass}">
@@ -2510,6 +2724,7 @@ function openTeacherAttemptReview(attempt) {
             <p class="review-options-title">Alternativas</p>
             ${allOptionsHtml}
           </div>
+          ${questionExplanation ? `<div class="review-explanation-block"><p class="review-options-title">Explicação</p><p class="review-question-explanation">${escapeHtml(questionExplanation)}</p></div>` : ""}
         </article>
       `;
     }).join("");
@@ -2570,6 +2785,9 @@ async function loadTeacherPanelData() {
                   ${attempt.status === "cancelled" && (attempt.motivoCancelamento || attempt.cancelReason)
             ? `<small class="teacher-status-note ${(attempt.blockedByViolation || attempt.bloqueadoPorViolacao) ? "teacher-status-note-danger" : "teacher-status-note-muted"}">${attempt.motivoCancelamento || attempt.cancelReason}</small>`
             : ""}
+                  ${(attempt.penalidadeSaidaFoco || attempt.focusExitPenaltyApplied)
+            ? `<small class="teacher-status-note teacher-status-note-danger">Penalidade: saiu do foco antes da liberação do professor.</small>`
+            : ""}
                 </div>
               </td>
               <td class="teacher-cell-date">${attempt.data || "-"}</td>
@@ -2611,14 +2829,18 @@ async function loadTeacherPanelData() {
         </article>
       `;
 
-      return { turmaNome, userCard, slug, userData };
+      const searchText = `${String(userData.nome || "")} ${String(userData.email || "")} ${String(slug || "")}`
+        .toLowerCase()
+        .trim();
+
+      return { turmaNome, userCard, slug, userData, searchText };
     }));
 
-    userCards.forEach(({ turmaNome, userCard }) => {
+    userCards.forEach(({ turmaNome, userCard, searchText }) => {
       if (!groups[turmaNome]) {
         groups[turmaNome] = [];
       }
-      groups[turmaNome].push(userCard);
+      groups[turmaNome].push({ html: userCard, searchText });
     });
 
     const orderedTurmas = Object.keys(groups).sort((a, b) => {
@@ -2627,90 +2849,186 @@ async function loadTeacherPanelData() {
       return a.localeCompare(b, "pt-BR");
     });
 
-    teacherUsersList.innerHTML = orderedTurmas
-      .map((turmaNome) => `
-        <section class="teacher-classroom-section">
-          <div class="teacher-classroom-section-head">
-            <h3>Turma: ${turmaNome}</h3>
-            <button type="button" class="btn btn-ghost btn-sm teacher-classroom-report-btn" data-turma="${escapeHtml(turmaNome)}">Relatório da turma</button>
-          </div>
-          <div class="teacher-users-list">
-            ${groups[turmaNome].join("")}
-          </div>
-        </section>
-      `)
-      .join("");
+    if (!orderedTurmas.length) {
+      teacherUsersList.innerHTML = `<p class="teacher-empty-state">Nenhuma turma encontrada.</p>`;
+      teacherMessage.textContent = "";
+      return;
+    }
 
-    teacherMessage.textContent = "";
+    let selectedTurma = orderedTurmas.includes(state.teacherResultsClassroomFilter)
+      ? state.teacherResultsClassroomFilter
+      : orderedTurmas[0];
+    let studentSearch = String(state.teacherResultsStudentSearch || "");
+    let optionsOpen = false;
 
-    teacherUsersList.querySelectorAll(".teacher-release-btn").forEach((button) => {
-      button.textContent = "Limpar";
-      button.title = "Excluir todas as tentativas deste quiz para este aluno";
-      button.addEventListener("click", async () => {
-        const slug = button.dataset.slug;
-        const quizId = button.dataset.quizid;
-        if (!slug || !quizId) {
-          return;
-        }
-
-        const ok = confirm(`Excluir todas as tentativas do quiz '${quizId}' para este aluno? Isso permitirá que ele comece do zero.`);
-        if (!ok) {
-          return;
-        }
-
-        button.disabled = true;
-        button.textContent = "Limpando...";
-
-        const cleaned = await releaseQuizForStudent(slug, quizId);
-        if (cleaned) {
-          button.textContent = "Limpo";
-          teacherMessage.textContent = "Tentativas removidas com sucesso.";
-          await loadTeacherPanelData();
-        } else {
-          button.disabled = false;
-          button.textContent = "Limpar";
-          teacherMessage.textContent = "Erro ao limpar tentativas.";
+    const getMembrosByTurma = (turmaNome) => {
+      const membros = [];
+      usersSnap.docs.forEach((userDoc) => {
+        const data = userDoc.data() || {};
+        const turma = String(data.turmaNome || "").trim() || "Sem turma";
+        if (turma === turmaNome) {
+          membros.push({ slug: userDoc.id, nome: data.nome || userDoc.id });
         }
       });
-    });
+      return membros;
+    };
 
-    teacherUsersList.querySelectorAll(".teacher-summary-btn").forEach((button) => {
-      button.addEventListener("click", async () => {
-        const slug = button.dataset.slug;
-        const quizId = button.dataset.quizid;
-        if (!slug || !quizId) {
-          return;
-        }
+    const bindTeacherResultCardActions = () => {
+      teacherUsersList.querySelectorAll(".teacher-release-btn").forEach((button) => {
+        button.textContent = "Limpar";
+        button.title = "Excluir todas as tentativas deste quiz para este aluno";
+        button.addEventListener("click", async () => {
+          const slug = button.dataset.slug;
+          const quizId = button.dataset.quizid;
+          if (!slug || !quizId) {
+            return;
+          }
 
-        const attempt = await loadLatestAttemptBySlugQuiz(slug, quizId);
-        if (!attempt) {
-          alert("Este aluno ainda não possui tentativa para este quiz.");
-          return;
-        }
+          const ok = confirm(`Excluir todas as tentativas do quiz '${quizId}' para este aluno? Isso permitirá que ele comece do zero.`);
+          if (!ok) {
+            return;
+          }
 
-        openTeacherAttemptReview(attempt);
-      });
-    });
+          button.disabled = true;
+          button.textContent = "Limpando...";
 
-    teacherUsersList.querySelectorAll(".teacher-classroom-report-btn").forEach((button) => {
-      button.addEventListener("click", () => {
-        const turmaNome = button.dataset.turma;
-        const slugsNaTurma = [];
-        userCards.forEach(({ turmaNome: t, userCard: _, slug, userData: _u }) => {
-          if (t === turmaNome) slugsNaTurma.push({ slug: _u?.slug, nome: _u?.nome });
-        });
-        // Recolhe slugs diretamente dos dados já processados
-        const membros = [];
-        usersSnap.docs.forEach((userDoc) => {
-          const data = userDoc.data();
-          const turma = String(data.turmaNome || "").trim() || "Sem turma";
-          if (turma === turmaNome) {
-            membros.push({ slug: userDoc.id, nome: data.nome || userDoc.id });
+          const cleaned = await releaseQuizForStudent(slug, quizId);
+          if (cleaned) {
+            button.textContent = "Limpo";
+            teacherMessage.textContent = "Tentativas removidas com sucesso.";
+            await loadTeacherPanelData();
+          } else {
+            button.disabled = false;
+            button.textContent = "Limpar";
+            teacherMessage.textContent = "Erro ao limpar tentativas.";
           }
         });
-        openClassroomReportModal(turmaNome, membros);
       });
-    });
+
+      teacherUsersList.querySelectorAll(".teacher-summary-btn").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const slug = button.dataset.slug;
+          const quizId = button.dataset.quizid;
+          if (!slug || !quizId) {
+            return;
+          }
+
+          const attempt = await loadLatestAttemptBySlugQuiz(slug, quizId);
+          if (!attempt) {
+            alert("Este aluno ainda não possui tentativa para este quiz.");
+            return;
+          }
+
+          openTeacherAttemptReview(attempt);
+        });
+      });
+
+      const reportButton = teacherUsersList.querySelector(".teacher-classroom-report-btn");
+      if (reportButton) {
+        reportButton.addEventListener("click", () => {
+          const turmaNome = String(reportButton.dataset.turma || "").trim();
+          if (!turmaNome) {
+            return;
+          }
+          openClassroomReportModal(turmaNome, getMembrosByTurma(turmaNome));
+        });
+      }
+    };
+
+    const renderSelectedTurmaResults = (options = {}) => {
+      state.teacherResultsClassroomFilter = selectedTurma;
+      state.teacherResultsStudentSearch = studentSearch;
+      const optionsHtml = orderedTurmas
+        .map((turmaNome) => `
+          <button type="button" class="btn btn-ghost btn-sm teacher-classroom-option-btn ${turmaNome === selectedTurma ? "is-selected" : ""}" data-select-turma="${escapeHtml(turmaNome)}">${escapeHtml(turmaNome)}</button>
+        `)
+        .join("");
+
+      const normalizedSearch = studentSearch.trim().toLowerCase();
+      const turmaEntries = groups[selectedTurma] || [];
+      const filteredEntries = normalizedSearch
+        ? turmaEntries.filter((entry) => String(entry.searchText || "").includes(normalizedSearch))
+        : turmaEntries;
+      const usersHtml = filteredEntries.length
+        ? filteredEntries.map((entry) => entry.html).join("")
+        : `<p class="teacher-empty-state">Nenhum aluno encontrado para o filtro informado.</p>`;
+
+      teacherUsersList.innerHTML = `
+        <section class="teacher-classroom-section">
+          <div class="teacher-classroom-filter-bar">
+            <button type="button" class="teacher-classroom-filter-chip teacher-classroom-filter-chip-btn" data-toggle-turma-options aria-expanded="${optionsOpen ? "true" : "false"}" title="Trocar turma">
+              <span class="teacher-classroom-chip-name">${escapeHtml(selectedTurma)}</span>
+              <span class="teacher-classroom-chip-caret">${optionsOpen ? "▴" : "▾"}</span>
+            </button>
+            <input type="text" class="teacher-student-search-input" data-student-search placeholder="Buscar aluno" value="${escapeHtml(studentSearch)}" autocomplete="off" />
+            <button type="button" class="btn btn-ghost btn-sm teacher-classroom-report-btn" data-turma="${escapeHtml(selectedTurma)}">Relatório da turma</button>
+          </div>
+          <div class="teacher-classroom-options ${optionsOpen ? "" : "hidden"}" data-turma-options>${optionsHtml}</div>
+          <div class="teacher-users-list">
+            ${usersHtml}
+          </div>
+        </section>
+      `;
+
+      const toggleButton = teacherUsersList.querySelector("[data-toggle-turma-options]");
+      const optionsPanel = teacherUsersList.querySelector("[data-turma-options]");
+      if (toggleButton && optionsPanel) {
+        toggleButton.addEventListener("click", () => {
+          optionsOpen = !optionsOpen;
+          optionsPanel.classList.toggle("hidden", !optionsOpen);
+          toggleButton.setAttribute("aria-expanded", optionsOpen ? "true" : "false");
+          const caret = toggleButton.querySelector(".teacher-classroom-chip-caret");
+          if (caret) {
+            caret.textContent = optionsOpen ? "▴" : "▾";
+          }
+        });
+      }
+
+      const studentSearchInput = teacherUsersList.querySelector("[data-student-search]");
+      if (studentSearchInput) {
+        studentSearchInput.addEventListener("input", () => {
+          const selectionStart = studentSearchInput.selectionStart;
+          const selectionEnd = studentSearchInput.selectionEnd;
+          studentSearch = String(studentSearchInput.value || "");
+          renderSelectedTurmaResults({
+            preserveSearchFocus: true,
+            searchSelectionStart: selectionStart,
+            searchSelectionEnd: selectionEnd
+          });
+        });
+      }
+
+      teacherUsersList.querySelectorAll("[data-select-turma]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const turma = String(button.dataset.selectTurma || "").trim();
+          if (!turma || turma === selectedTurma) {
+            return;
+          }
+          selectedTurma = turma;
+          optionsOpen = false;
+          renderSelectedTurmaResults();
+        });
+      });
+
+      bindTeacherResultCardActions();
+
+      if (options.preserveSearchFocus) {
+        const nextSearchInput = teacherUsersList.querySelector("[data-student-search]");
+        if (nextSearchInput) {
+          const start = Number(options.searchSelectionStart);
+          const end = Number(options.searchSelectionEnd);
+          requestAnimationFrame(() => {
+            nextSearchInput.focus();
+            if (Number.isFinite(start) && Number.isFinite(end)) {
+              nextSearchInput.setSelectionRange(start, end);
+            }
+          });
+        }
+      }
+    };
+
+    renderSelectedTurmaResults();
+    teacherMessage.textContent = "";
   } catch (error) {
     teacherMessage.textContent = "Erro ao carregar painel do professor.";
     console.error(error);
@@ -2972,7 +3290,7 @@ function addBuilderOptionRow(optionsEl, value = "", isCorrect = false) {
       <input type="radio" name="" ${isCorrect ? "checked" : ""} />
       <span>Correta</span>
     </label>
-    <input type="text" placeholder="Texto da alternativa" value="${value.replace(/"/g, "&quot;")}" required />
+    <input type="text" class="builder-option-label-input" placeholder="Texto da alternativa" value="${value.replace(/"/g, "&quot;")}" required />
     <button type="button" class="builder-remove-option" title="Remover alternativa" aria-label="Remover alternativa">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <path d="M9 3v1H4v2h16V4h-5V3H9z" fill="currentColor" />
@@ -3053,6 +3371,7 @@ function addBuilderQuestionCard(seed = {}) {
     </div>
     <input type="text" class="builder-question-title" placeholder="Enunciado da questão" value="${(seed.title || "").replace(/"/g, "&quot;")}" required />
     <input type="text" class="builder-question-description" placeholder="Descrição (opcional)" value="${(seed.description || "").replace(/"/g, "&quot;")}" />
+    <textarea class="builder-question-explanation" placeholder="Explicação da questão para a revisão (opcional)">${(seed.explanation || "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</textarea>
     <div class="builder-image-field">
       <label class="builder-field-label">Imagem (opcional)</label>
       <div class="builder-image-upload">
@@ -3157,11 +3476,424 @@ function addBuilderQuestionCard(seed = {}) {
     ? seed.options
     : [{ label: "" }, { label: "" }, { label: "" }, { label: "" }];
 
-  seedOptions.forEach((option) => addBuilderOptionRow(optionsEl, option.label || "", option.value === seed.correctAnswer));
+  seedOptions.forEach((option) => {
+    addBuilderOptionRow(optionsEl, option.label || "", option.value === seed.correctAnswer);
+  });
 
   builderQuestions.appendChild(card);
   updateBuilderQuestionTitles();
   updateBuilderRadioGroups();
+}
+
+function setBuilderSelectValue(selectEl, nextValue, fallbackValue = "") {
+  if (!selectEl) {
+    return;
+  }
+
+  const normalized = String(nextValue || "").trim();
+  const hasOption = Array.from(selectEl.options || []).some((option) => String(option.value) === normalized);
+  if (hasOption) {
+    selectEl.value = normalized;
+    return;
+  }
+
+  if (fallbackValue) {
+    selectEl.value = fallbackValue;
+  }
+}
+
+function normalizeGeneratedQuestionSeed(question = {}, index = 0) {
+  const rawOptions = Array.isArray(question.options) ? question.options : [];
+  const options = rawOptions
+    .map((option, optionIndex) => {
+      if (typeof option === "string") {
+        return {
+          value: String.fromCharCode(97 + optionIndex),
+          label: option
+        };
+      }
+
+      if (!option || typeof option.label !== "string") {
+        return null;
+      }
+
+      return {
+        value: String(option.value || String.fromCharCode(97 + optionIndex)),
+        label: String(option.label || "").trim()
+      };
+    })
+    .filter((option) => option && option.label);
+
+  const correctAnswer = String(question.correctAnswer || question.correctOptionValue || "").trim();
+  const correctAnswerIndex = Number.parseInt(question.correctAnswerIndex, 10);
+  let resolvedCorrectAnswer = correctAnswer;
+
+  if (!resolvedCorrectAnswer && Number.isFinite(correctAnswerIndex) && options[correctAnswerIndex]) {
+    resolvedCorrectAnswer = options[correctAnswerIndex].value;
+  }
+
+  if (!resolvedCorrectAnswer && options[0]) {
+    resolvedCorrectAnswer = options[0].value;
+  }
+
+  return {
+    id: question.id || `q${index + 1}`,
+    title: String(question.title || `Questão ${index + 1}`),
+    description: String(question.description || "Selecione apenas uma alternativa."),
+    explanation: String(question.explanation || ""),
+    points: Math.max(1, Number.parseInt(question.points, 10) || 1),
+    timer: Math.max(0, Number.parseInt(question.timer, 10) || 0),
+    options,
+    correctAnswer: resolvedCorrectAnswer,
+    image: typeof question.image === "string" ? question.image : ""
+  };
+}
+
+function getStoredGeminiApiKey() {
+  try {
+    return String(window.localStorage?.getItem(GEMINI_API_KEY_STORAGE_KEY) || "").trim();
+  } catch (_error) {
+    return "";
+  }
+}
+
+function setStoredGeminiApiKey(value = "") {
+  const normalized = String(value || "").trim();
+  try {
+    if (!normalized) {
+      window.localStorage?.removeItem(GEMINI_API_KEY_STORAGE_KEY);
+      return;
+    }
+    window.localStorage?.setItem(GEMINI_API_KEY_STORAGE_KEY, normalized);
+  } catch (_error) {
+    // Ignora bloqueios de armazenamento do navegador.
+  }
+}
+
+function normalizeAiDifficulty(value) {
+  const normalized = String(value || "facil").trim().toLowerCase();
+  if (["facil", "medio", "dificil"].includes(normalized)) {
+    return normalized;
+  }
+  return "facil";
+}
+
+function normalizeAiDuration(value) {
+  const allowed = new Set(["5 min", "8 min", "10 min", "12 min", "15 min", "20 min"]);
+  const normalized = String(value || "8 min").trim();
+  return allowed.has(normalized) ? normalized : "8 min";
+}
+
+function buildGeminiGenerationPrompt({ prompt, questionCount, difficulty, schoolLevel, duration, maxAttempts, alternativesVisibilityMode }) {
+  return [
+    "Você deve gerar um questionário em JSON puro, sem markdown, sem comentários e sem texto fora do JSON.",
+    "Responda em português do Brasil.",
+    "O JSON deve seguir exatamente este formato:",
+    JSON.stringify({
+      title: "Titulo do quiz",
+      description: "Descricao curta do quiz",
+      duration: "8 min",
+      maxAttempts: 1,
+      alternativesVisibilityMode: "revealed",
+      questions: [
+        {
+          title: "Enunciado da questao",
+          description: "Orientacao curta da questao",
+          explanation: "Explicacao curta para revisao",
+          points: 1,
+          timer: 0,
+          options: [
+            { label: "Alternativa A" },
+            { label: "Alternativa B" },
+            { label: "Alternativa C" },
+            { label: "Alternativa D" }
+          ],
+          correctAnswerIndex: 0
+        }
+      ]
+    }),
+    `Quantidade de questoes: ${questionCount}.`,
+    `Dificuldade: ${difficulty}.`,
+    `Nivel escolar: ${schoolLevel || "nao informado"}.`,
+    `Duracao sugerida: ${duration}.`,
+    `Numero maximo de tentativas: ${maxAttempts}.`,
+    `Visualizacao das alternativas: ${alternativesVisibilityMode}.`,
+    "Cada questao deve ter entre 4 alternativas, apenas uma correta.",
+    "Nao invente campos extras.",
+    `Tema e instrucoes do professor: ${prompt}`
+  ].join("\n");
+}
+
+function extractJsonPayload(text = "") {
+  const normalized = String(text || "").trim();
+  if (!normalized) {
+    throw new Error("A Gemini nao retornou conteudo utilizavel.");
+  }
+
+  try {
+    return JSON.parse(normalized);
+  } catch (_error) {
+    const firstBrace = normalized.indexOf("{");
+    const lastBrace = normalized.lastIndexOf("}");
+    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+      throw new Error("A Gemini retornou um formato invalido para o quiz.");
+    }
+
+    try {
+      return JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
+    } catch (_innerError) {
+      throw new Error("A Gemini retornou um formato invalido para o quiz.");
+    }
+  }
+}
+
+async function requestQuizFromGemini({ apiKey, prompt }) {
+  const apiVersions = ["v1", "v1beta"];
+  const preferredModels = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash"
+  ];
+
+  async function listModelsForVersion(version) {
+    const endpoint = `https://generativelanguage.googleapis.com/${version}/models?key=${encodeURIComponent(apiKey)}`;
+    const response = await fetch(endpoint);
+    if (!response.ok) {
+      return [];
+    }
+
+    const json = await response.json();
+    const models = Array.isArray(json?.models) ? json.models : [];
+    return models
+      .filter((model) => Array.isArray(model?.supportedGenerationMethods) && model.supportedGenerationMethods.includes("generateContent"))
+      .map((model) => String(model?.name || "").replace(/^models\//, "").trim())
+      .filter(Boolean);
+  }
+
+  let listedModels = [];
+  try {
+    const listedFromV1 = await listModelsForVersion("v1");
+    const listedFromV1Beta = await listModelsForVersion("v1beta");
+    listedModels = [...listedFromV1, ...listedFromV1Beta];
+  } catch (_error) {
+    listedModels = [];
+  }
+
+  const modelsToTry = Array.from(new Set([...preferredModels, ...listedModels])).slice(0, 12);
+  const nonFatalErrors = [];
+
+  const requestBody = {
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 8192
+    },
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: prompt }]
+      }
+    ]
+  };
+
+  for (const model of modelsToTry) {
+    for (const version of apiVersions) {
+      const endpoint = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        const text = json?.candidates?.[0]?.content?.parts?.map((part) => part?.text || "").join("") || "";
+        return extractJsonPayload(text);
+      }
+
+      const errorBody = await response.text();
+      const lowerBody = String(errorBody || "").toLowerCase();
+      const modelNotFound = response.status === 404 || lowerBody.includes("not found") || lowerBody.includes("not supported for generatecontent");
+
+      if (modelNotFound) {
+        nonFatalErrors.push(`[${version}/${model}] HTTP ${response.status}`);
+        continue;
+      }
+
+      let errorMessage = "Falha ao gerar quiz com a Gemini API.";
+      if (response.status === 400) {
+        errorMessage = "Requisição inválida para a Gemini API. Revise o prompt e os campos.";
+      } else if (response.status === 401 || response.status === 403) {
+        errorMessage = "Chave da Gemini inválida ou sem permissão.";
+      } else if (response.status === 429) {
+        errorMessage = "Limite de uso da Gemini atingido no momento.";
+      }
+
+      throw new Error(`${errorMessage} [HTTP ${response.status}] ${errorBody.slice(0, 220)}`);
+    }
+  }
+
+  const fallbackInfo = nonFatalErrors.length
+    ? ` Modelos testados sem sucesso: ${nonFatalErrors.slice(0, 5).join(" | ")}.`
+    : "";
+  throw new Error(`Falha ao gerar quiz: nenhum modelo Gemini compatível foi encontrado para sua chave/projeto.${fallbackInfo}`);
+}
+
+function normalizeGeneratedQuizPayload(rawQuiz, fallback = {}) {
+  const generatedQuestions = Array.isArray(rawQuiz?.questions) ? rawQuiz.questions : [];
+  const questions = generatedQuestions
+    .map((question, index) => normalizeGeneratedQuestionSeed(question, index))
+    .filter((question) => question.title && Array.isArray(question.options) && question.options.length >= 2);
+
+  if (!questions.length) {
+    throw new Error("A IA nao retornou questoes validas.");
+  }
+
+  return {
+    title: String(rawQuiz?.title || "Quiz gerado com IA").trim(),
+    description: String(
+      rawQuiz?.description || (fallback.prompt ? `Quiz gerado a partir do prompt: ${fallback.prompt}` : "Quiz gerado com IA.")
+    ).trim(),
+    duration: normalizeAiDuration(rawQuiz?.duration || fallback.duration),
+    maxAttempts: Math.max(1, Number.parseInt(rawQuiz?.maxAttempts || fallback.maxAttempts, 10) || 1),
+    alternativesVisibilityMode:
+      rawQuiz?.alternativesVisibilityMode === "hidden" || fallback.alternativesVisibilityMode === "hidden"
+        ? "hidden"
+        : "revealed",
+    questions
+  };
+}
+
+function applyGeneratedQuizToBuilder(generatedQuiz = {}) {
+  if (!builderQuestions) {
+    return;
+  }
+
+  state.editingQuizId = null;
+  if (builderSubmitButton) {
+    builderSubmitButton.textContent = "Salvar no banco";
+  }
+
+  if (builderTitleInput) {
+    builderTitleInput.value = String(generatedQuiz.title || "").trim();
+  }
+  if (builderDescriptionInput) {
+    builderDescriptionInput.value = String(generatedQuiz.description || "").trim();
+  }
+  if (builderMaxAttemptsInput) {
+    builderMaxAttemptsInput.value = String(Math.max(1, Number.parseInt(generatedQuiz.maxAttempts, 10) || 1));
+  }
+  setBuilderSelectValue(builderDurationInput, String(generatedQuiz.duration || "").trim(), "8 min");
+  setBuilderSelectValue(
+    builderAlternativesVisibilityInput,
+    generatedQuiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed",
+    "revealed"
+  );
+
+  builderQuestions.innerHTML = "";
+  const generatedQuestions = Array.isArray(generatedQuiz.questions) ? generatedQuiz.questions : [];
+  generatedQuestions
+    .map((question, index) => normalizeGeneratedQuestionSeed(question, index))
+    .filter((question) => question.title && Array.isArray(question.options) && question.options.length >= 2)
+    .forEach((question) => addBuilderQuestionCard(question));
+
+  state.builderDraftGeneratedWithAi = true;
+  state.builderDraftAiPrompt = String(builderAiPromptInput?.value || "").trim();
+
+  if (!builderQuestions.children.length) {
+    addBuilderQuestionCard();
+  }
+
+  if (builderMessage) {
+    builderMessage.textContent = "Rascunho gerado com IA. Revise antes de salvar.";
+  }
+}
+
+async function handleBuilderGenerateWithAi() {
+  if (!state.isTeacher) {
+    if (builderAiMessage) {
+      builderAiMessage.textContent = "Apenas professores podem gerar quizzes com IA.";
+    }
+    return;
+  }
+
+  const prompt = builderAiPromptInput?.value.trim() || "";
+  if (!prompt) {
+    if (builderAiMessage) {
+      builderAiMessage.textContent = "Descreva o tema antes de gerar o quiz.";
+    }
+    return;
+  }
+
+  const apiKey = String(builderAiApiKeyInput?.value || getStoredGeminiApiKey() || "").trim();
+  if (!apiKey) {
+    if (builderAiMessage) {
+      builderAiMessage.textContent = "Informe sua Gemini API key para gerar o quiz.";
+    }
+    return;
+  }
+
+  setStoredGeminiApiKey(apiKey);
+
+  const requestedQuestionCount = Math.min(20, Math.max(1, Number.parseInt(builderAiQuestionCountInput?.value || "5", 10) || 5));
+  const difficulty = normalizeAiDifficulty(String(builderAiDifficultyInput?.value || "facil"));
+  const schoolLevel = String(builderAiSchoolLevelInput?.value || "").trim();
+  const duration = normalizeAiDuration(builderDurationInput?.value || "8 min");
+  const maxAttempts = Math.max(1, Number.parseInt(builderMaxAttemptsInput?.value || "1", 10) || 1);
+  const alternativesVisibilityMode = builderAlternativesVisibilityInput?.value === "hidden" ? "hidden" : "revealed";
+
+  if (builderAiGenerateButton) {
+    builderAiGenerateButton.disabled = true;
+    builderAiGenerateButton.textContent = "Gerando...";
+  }
+  if (builderAiMessage) {
+    builderAiMessage.textContent = "Gerando questionário com IA...";
+  }
+
+  try {
+    const generationPrompt = buildGeminiGenerationPrompt({
+      prompt,
+      questionCount: requestedQuestionCount,
+      difficulty,
+      schoolLevel,
+      duration,
+      maxAttempts,
+      alternativesVisibilityMode
+    });
+
+    const rawQuiz = await requestQuizFromGemini({
+      apiKey,
+      prompt: generationPrompt
+    });
+    const generatedQuiz = normalizeGeneratedQuizPayload(rawQuiz, {
+      prompt,
+      duration,
+      maxAttempts,
+      alternativesVisibilityMode
+    });
+
+    state.builderDraftGeneratedWithAi = true;
+    state.builderDraftAiPrompt = prompt;
+    applyGeneratedQuizToBuilder(generatedQuiz);
+    if (builderAiMessage) {
+      builderAiMessage.textContent = "Quiz gerado com sucesso. Revise e ajuste o conteúdo antes de salvar.";
+    }
+    showBottomNotice("Quiz gerado com IA e carregado no criador.", "success", 2600);
+  } catch (error) {
+    console.error("Erro ao gerar quiz com IA:", error);
+    if (builderAiMessage) {
+      builderAiMessage.textContent = error?.message || "Não foi possível gerar o quiz com IA agora.";
+    }
+    showBottomNotice("Falha ao gerar quiz com IA.", "error", 3200);
+  } finally {
+    if (builderAiGenerateButton) {
+      builderAiGenerateButton.disabled = false;
+      builderAiGenerateButton.textContent = "Gerar com IA";
+    }
+  }
 }
 
 function updateBuilderQuestionTitles() {
@@ -3175,6 +3907,8 @@ function updateBuilderQuestionTitles() {
 
 function resetBuilderForm() {
   state.editingQuizId = null;
+  state.builderDraftGeneratedWithAi = false;
+  state.builderDraftAiPrompt = "";
   if (builderForm) {
     builderForm.reset();
   }
@@ -3183,6 +3917,9 @@ function resetBuilderForm() {
   }
   if (builderSubmitButton) {
     builderSubmitButton.textContent = "Salvar no banco";
+  }
+  if (builderAiMessage) {
+    builderAiMessage.textContent = "";
   }
   addBuilderQuestionCard();
 }
@@ -3200,9 +3937,17 @@ async function startEditingQuiz(quizId) {
   builderTitleInput.value = quiz.title || "";
   builderDescriptionInput.value = quiz.description || "";
   builderDurationInput.value = quiz.duration || "8 min";
+  if (builderMaxAttemptsInput) {
+    builderMaxAttemptsInput.value = String(Math.max(1, Number.parseInt(quiz.maxAttempts, 10) || 1));
+  }
   if (builderAlternativesVisibilityInput) {
     builderAlternativesVisibilityInput.value = quiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed";
   }
+  if (builderAiPromptInput) {
+    builderAiPromptInput.value = String(quiz.aiGenerationPrompt || "");
+  }
+  state.builderDraftGeneratedWithAi = Boolean(String(quiz.aiGenerationPrompt || "").trim());
+  state.builderDraftAiPrompt = String(quiz.aiGenerationPrompt || "").trim();
   builderQuestions.innerHTML = "";
   (quiz.questions || []).forEach((question, index) => {
     const questionId = question.id || `q${index + 1}`;
@@ -3227,6 +3972,7 @@ function buildQuestionsFromBuilder() {
   for (const card of getBuilderQuestionCards()) {
     const title = card.querySelector(".builder-question-title")?.value.trim() || "";
     const description = card.querySelector(".builder-question-description")?.value.trim() || "";
+    const explanation = card.querySelector(".builder-question-explanation")?.value.trim() || "";
     const image = card.querySelector(".builder-image-url")?.value.trim() || "";
     const points = Number(card.querySelector(".builder-question-points")?.value || 1);
     const optionRows = Array.from(card.querySelectorAll(".builder-option-row"));
@@ -3240,7 +3986,7 @@ function buildQuestionsFromBuilder() {
     let correctAnswer = "";
 
     optionRows.forEach((row, index) => {
-      const label = row.querySelector("input[type='text']")?.value.trim() || "";
+      const label = row.querySelector(".builder-option-label-input")?.value.trim() || "";
       const isCorrect = row.querySelector("input[type='radio']")?.checked;
       const value = String.fromCharCode(97 + index);
 
@@ -3263,6 +4009,7 @@ function buildQuestionsFromBuilder() {
       type: "single-choice",
       title,
       description: description || "Selecione apenas uma alternativa.",
+      explanation,
       points: Number.isFinite(points) && points > 0 ? points : 1,
       options,
       timer: Number.isFinite(timer) && timer > 0 ? timer : 0,
@@ -3316,6 +4063,7 @@ async function handleBuilderCreateQuiz(event) {
   const title = builderTitleInput?.value.trim() || "";
   const description = builderDescriptionInput?.value.trim() || "";
   const duration = builderDurationInput?.value.trim() || "10 min";
+  const maxAttempts = Math.max(1, Number.parseInt(builderMaxAttemptsInput?.value || "1", 10) || 1);
   const alternativesVisibilityMode = builderAlternativesVisibilityInput?.value === "hidden" ? "hidden" : "revealed";
 
   if (!title || !description) {
@@ -3344,6 +4092,7 @@ async function handleBuilderCreateQuiz(event) {
       type: "single-choice",
       title: question.title,
       description: question.description,
+      explanation: String(question.explanation || ""),
       points: question.points,
       options: question.options,
       timer: question.timer,
@@ -3356,6 +4105,7 @@ async function handleBuilderCreateQuiz(event) {
     title,
     description,
     duration,
+    maxAttempts,
     alternativesVisibilityMode,
     questions: questionsWithTokens,
     ativo: true,
@@ -3364,6 +4114,17 @@ async function handleBuilderCreateQuiz(event) {
     criadoEmIso: new Date().toISOString(),
     atualizadoEmIso: new Date().toISOString()
   };
+
+  const aiPromptToPersist = state.builderDraftGeneratedWithAi
+    ? String(state.builderDraftAiPrompt || builderAiPromptInput?.value || "").trim()
+    : "";
+
+  if (aiPromptToPersist) {
+    payload.aiGenerationPrompt = aiPromptToPersist;
+    payload.aiGenerationProvider = "gemini";
+  } else {
+    payload.aiGenerationPrompt = "";
+  }
 
   if (builderMessage) {
     builderMessage.textContent = state.editingQuizId ? "Salvando alteracoes..." : "Salvando no banco de quizzes...";
@@ -3404,9 +4165,29 @@ function getStorageKey(quizId) {
   return `quiz_attempt_${uid}_${quizId}`;
 }
 
+function getAttemptCountStorageKey(quizId) {
+  const uid = state.user?.uid || "anon";
+  return `quiz_attempt_count_${uid}_${quizId}`;
+}
+
 function getStoredAttempt(quizId) {
   const raw = localStorage.getItem(getStorageKey(quizId));
   return raw ? JSON.parse(raw) : null;
+}
+
+function getStoredAttemptCount(quizId) {
+  const raw = localStorage.getItem(getAttemptCountStorageKey(quizId));
+  const parsed = Number.parseInt(String(raw || "0"), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function setStoredAttemptCount(quizId, value) {
+  const normalized = Math.max(0, Number.parseInt(String(value || 0), 10) || 0);
+  if (normalized === 0) {
+    localStorage.removeItem(getAttemptCountStorageKey(quizId));
+    return;
+  }
+  localStorage.setItem(getAttemptCountStorageKey(quizId), String(normalized));
 }
 
 function getKnownAttempt(quizId) {
@@ -3415,6 +4196,7 @@ function getKnownAttempt(quizId) {
     // Se não existe tentativa remota, remove localStorage para garantir sincronização
     if (!state.remoteAttemptsByQuiz[quizId]) {
       localStorage.removeItem(getStorageKey(quizId));
+      setStoredAttemptCount(quizId, Number(state.remoteAttemptCountsByQuiz?.[quizId] || 0));
       return null;
     }
     return state.remoteAttemptsByQuiz[quizId];
@@ -3422,6 +4204,45 @@ function getKnownAttempt(quizId) {
   // Se não carregou remoto ainda, usa local
   const localAttempt = getStoredAttempt(quizId);
   return localAttempt || null;
+}
+
+function resolveQuizMaxAttempts(quiz) {
+  return Math.max(1, Number.parseInt(quiz?.maxAttempts, 10) || 1);
+}
+
+function getKnownAttemptCount(quizId) {
+  if (state.remoteAttemptsLoaded) {
+    return Number(state.remoteAttemptCountsByQuiz?.[quizId] || 0);
+  }
+
+  const localCount = getStoredAttemptCount(quizId);
+  if (localCount > 0) {
+    return localCount;
+  }
+
+  return getStoredAttempt(quizId) ? 1 : 0;
+}
+
+function incrementKnownAttemptCount(quizId) {
+  if (!quizId) {
+    return;
+  }
+
+  const localCurrent = getStoredAttemptCount(quizId);
+  setStoredAttemptCount(quizId, localCurrent + 1);
+
+  if (!state.remoteAttemptsLoaded) {
+    return;
+  }
+
+  const current = Number(state.remoteAttemptCountsByQuiz?.[quizId] || 0);
+  state.remoteAttemptCountsByQuiz[quizId] = current + 1;
+}
+
+function formatAttemptsRemainingMessage(quiz, usedAttempts = 0) {
+  const maxAttempts = resolveQuizMaxAttempts(quiz);
+  const remaining = Math.max(0, maxAttempts - usedAttempts);
+  return `${usedAttempts}/${maxAttempts} tentativas usadas (${remaining} restantes).`;
 }
 
 function saveStoredAttempt(quizId, payload) {
@@ -3515,6 +4336,7 @@ function buildCancelledQuestionResults(quiz, answersSnapshot = cloneAnswersSnaps
     return {
       questionId,
       questionTitle: question?.title || `Questão ${index + 1}`,
+      questionExplanation: String(question?.explanation || ""),
       selectedValue,
       selectedLabel: selectedOption ? String(selectedOption.label || "") : "",
       correctValue,
@@ -3548,6 +4370,1558 @@ async function syncLatestAttemptForQuiz(quizId) {
   }
 
   return getKnownAttempt(quizId);
+}
+
+function getPendingFocusWaitContext() {
+  if (state.isTeacher) {
+    return null;
+  }
+
+  const quizzes = getAllQuizzes();
+  let selected = null;
+
+  quizzes.forEach((quiz) => {
+    const attempt = getKnownAttempt(quiz.id);
+    if (!attempt || attempt.status !== "completed" || !attempt.result) {
+      return;
+    }
+    if (quiz.allowFocusExitAfterFinish) {
+      return;
+    }
+    if (attempt.focusExitPenaltyApplied || attempt?.result?.focusExitPenaltyApplied) {
+      return;
+    }
+
+    const ts = parsePtBrDate(attempt.result?.date || "");
+    if (!selected || ts >= selected.ts) {
+      selected = { quiz, attempt, ts };
+    }
+  });
+
+  return selected;
+}
+
+function isFocusWaitModeActive() {
+  return Boolean(getPendingFocusWaitContext());
+}
+
+function isFocusWaitGraceActive() {
+  return Number(focusWaitGraceDeadlineMs || 0) > Date.now();
+}
+
+function isFocusWaitRecoverySatisfied() {
+  return document.visibilityState === "visible" && document.hasFocus() && isFullscreenActive();
+}
+
+function ensureFocusWaitAlertElement() {
+  let box = document.getElementById("focus-wait-alert");
+  if (box) {
+    return box;
+  }
+
+  box = document.createElement("section");
+  box.id = "focus-wait-alert";
+  box.style.position = "fixed";
+  box.style.right = "16px";
+  box.style.bottom = "16px";
+  box.style.zIndex = "9999";
+  box.style.maxWidth = "360px";
+  box.style.padding = "14px";
+  box.style.borderRadius = "12px";
+  box.style.background = "#fff8e1";
+  box.style.border = "1px solid #e3b341";
+  box.style.boxShadow = "0 12px 30px rgba(0,0,0,.18)";
+  box.style.fontSize = "0.95rem";
+  box.style.color = "#1f2937";
+  box.style.display = "none";
+  box.innerHTML = `
+    <p style="margin:0 0 8px;font-weight:700;">${FOCUS_WAIT_PROCESS_NAME}</p>
+    <p id="focus-wait-alert-text" style="margin:0 0 10px;line-height:1.35;"></p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <button type="button" id="focus-wait-back-btn" class="btn btn-primary btn-sm">Voltar para tela cheia</button>
+      <small id="focus-wait-alert-count" style="font-weight:700;color:#9a3412;"></small>
+    </div>
+  `;
+
+  document.body.appendChild(box);
+
+  const backButton = document.getElementById("focus-wait-back-btn");
+  if (backButton) {
+    backButton.addEventListener("click", async () => {
+      await requestFullscreenMode();
+      if (isFocusWaitRecoverySatisfied()) {
+        resolveFocusWaitGraceWithoutPenalty();
+      }
+    });
+  }
+
+  return box;
+}
+
+function ensureFocusWaitPersistentNoticeElement() {
+  let notice = document.getElementById("focus-wait-persistent-notice");
+  if (notice) {
+    return notice;
+  }
+
+  notice = document.createElement("div");
+  notice.id = "focus-wait-persistent-notice";
+  notice.className = "focus-wait-persistent-notice hidden";
+  notice.setAttribute("role", "status");
+  notice.setAttribute("aria-live", "polite");
+  notice.innerHTML = `
+    <strong>${FOCUS_WAIT_PROCESS_NAME}</strong>
+    <span>Modo de espera ativo. Nao feche, nao recarregue e nao saia da tela. Aguarde a liberacao do professor.</span>
+  `;
+
+  document.body.appendChild(notice);
+  return notice;
+}
+
+function renderFocusWaitPersistentNotice() {
+  const notice = ensureFocusWaitPersistentNoticeElement();
+  const isActive = !state.isTeacher && isFocusWaitModeActive();
+
+  if (isActive) {
+    notice.classList.remove("hidden");
+    return;
+  }
+
+  notice.classList.add("hidden");
+}
+
+function hideFocusWaitAlert() {
+  const box = document.getElementById("focus-wait-alert");
+  if (box) {
+    box.style.display = "none";
+  }
+}
+
+function updateFocusWaitAlert() {
+  const box = ensureFocusWaitAlertElement();
+  const text = document.getElementById("focus-wait-alert-text");
+  const count = document.getElementById("focus-wait-alert-count");
+  const remainingMs = Math.max(0, Number(focusWaitGraceDeadlineMs || 0) - Date.now());
+  const remainingSeconds = Math.ceil(remainingMs / 1000);
+
+  if (text) {
+    text.textContent = `${focusWaitGraceReason} Você tem 1 chance: retorne ao foco em tela cheia para evitar penalidade.`;
+  }
+  if (count) {
+    count.textContent = `${Math.max(0, remainingSeconds)}s`;
+  }
+  box.style.display = "block";
+}
+
+function clearFocusWaitGraceTimers() {
+  if (focusWaitGraceTimeoutId) {
+    clearTimeout(focusWaitGraceTimeoutId);
+    focusWaitGraceTimeoutId = null;
+  }
+  if (focusWaitGraceIntervalId) {
+    clearInterval(focusWaitGraceIntervalId);
+    focusWaitGraceIntervalId = null;
+  }
+}
+
+function clearFocusWaitGrace() {
+  clearFocusWaitGraceTimers();
+  focusWaitGraceDeadlineMs = 0;
+  focusWaitGraceReason = "";
+  hideFocusWaitAlert();
+}
+
+function resolveFocusWaitGraceWithoutPenalty() {
+  clearFocusWaitGrace();
+  showBottomNotice("Aviso removido: você voltou ao foco em tela cheia dentro do tempo.", "success", 3000);
+}
+
+function normalizeLobbySegment(value, fallback = "sala") {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || fallback;
+}
+
+function buildWaitClassLobbyKey(quiz) {
+  const classSeed = String(quiz?.postedToClassroomId || state.classroomId || quiz?.postedToClassroomName || "turma");
+  const quizSeed = String(quiz?.sourceQuizId || quiz?.id || "quiz");
+  const classSegment = normalizeLobbySegment(classSeed, "turma");
+  const quizSegment = normalizeLobbySegment(quizSeed, "quiz");
+  return `${WAIT_NONOGRAM_LOBBY_PREFIX}-${classSegment}-${quizSegment}`;
+}
+
+function getWaitNonogramDateKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function hashStringToSeed(text) {
+  let hash = 2166136261;
+  const source = String(text || "seed");
+  for (let i = 0; i < source.length; i += 1) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) || 123456789;
+}
+
+function createSeededRng(seedText) {
+  let seed = hashStringToSeed(seedText);
+  return () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+}
+
+function createEmptyNonogramMarks(size) {
+  return Array.from({ length: size }, () => Array.from({ length: size }, () => 0));
+}
+
+const NONOGRAM_ICON_LIBRARY = [
+  {
+    name: "Coracao",
+    rows: [
+      "00100100",
+      "01111110",
+      "11111111",
+      "11111111",
+      "01111110",
+      "00111100",
+      "00011000",
+      "00000000"
+    ]
+  },
+  {
+    name: "Estrela",
+    rows: [
+      "00011000",
+      "01011010",
+      "01111110",
+      "11111111",
+      "01111110",
+      "01011010",
+      "10000001",
+      "00000000"
+    ]
+  },
+  {
+    name: "Casa",
+    rows: [
+      "00011000",
+      "00111100",
+      "01111110",
+      "11011011",
+      "10000001",
+      "10011001",
+      "11111111",
+      "00000000"
+    ]
+  },
+  {
+    name: "Lampada",
+    rows: [
+      "00111100",
+      "01111110",
+      "01111110",
+      "00111100",
+      "00011000",
+      "00011000",
+      "00111100",
+      "00111100"
+    ]
+  },
+  {
+    name: "Trofeu",
+    rows: [
+      "11111111",
+      "01111110",
+      "11011011",
+      "00111100",
+      "00011000",
+      "00111100",
+      "00111100",
+      "01111110"
+    ]
+  },
+  {
+    name: "Raio",
+    rows: [
+      "00011000",
+      "00110000",
+      "01100000",
+      "11111100",
+      "00011000",
+      "00110000",
+      "01100000",
+      "11000000"
+    ]
+  },
+  {
+    name: "Smiley",
+    rows: [
+      "00111100",
+      "01000010",
+      "10100101",
+      "10000001",
+      "10100101",
+      "10011001",
+      "01000010",
+      "00111100"
+    ]
+  },
+  {
+    name: "Livro",
+    rows: [
+      "11000011",
+      "11100111",
+      "11100111",
+      "11011011",
+      "11011011",
+      "11100111",
+      "11100111",
+      "11000011"
+    ]
+  }
+];
+
+function iconRowsToMatrix(rows, size) {
+  return rows.slice(0, size).map((rowText) => {
+    const normalized = String(rowText || "").padEnd(size, "0").slice(0, size);
+    return normalized.split("").map((char) => (char === "1" ? 1 : 0));
+  });
+}
+
+function iconMatrixToRows(matrix, size) {
+  return Array.from({ length: size }, (_, row) => {
+    const rowValues = Array.isArray(matrix?.[row]) ? matrix[row] : [];
+    return Array.from({ length: size }, (_, col) => (Number(rowValues[col] || 0) ? "1" : "0")).join("");
+  });
+}
+
+function normalizeNonogramTemplate(rawTemplate, size) {
+  if (!rawTemplate || !Array.isArray(rawTemplate.rows)) {
+    return null;
+  }
+
+  const rows = rawTemplate.rows
+    .slice(0, size)
+    .map((rowText) => String(rowText || "").replace(/[^01]/g, "").padEnd(size, "0").slice(0, size));
+
+  if (rows.length !== size) {
+    return null;
+  }
+
+  const filled = rows.join("").split("").reduce((acc, char) => acc + (char === "1" ? 1 : 0), 0);
+  if (filled === 0) {
+    return null;
+  }
+
+  return {
+    id: String(rawTemplate.id || "").trim() || `tpl_${Date.now().toString(36)}`,
+    name: String(rawTemplate.name || "Desenho").trim() || "Desenho",
+    rows,
+    createdAtMs: Number(rawTemplate.createdAtMs || Date.now())
+  };
+}
+
+function getCachedNonogramTemplatesByQuiz(quizId) {
+  const key = NONOGRAM_TEMPLATE_GLOBAL_KEY;
+  return Array.isArray(state.nonogramTemplatesByQuiz[key]) ? state.nonogramTemplatesByQuiz[key] : [];
+}
+
+async function loadCustomNonogramTemplatesForQuiz(quizId, options = {}) {
+  const key = NONOGRAM_TEMPLATE_GLOBAL_KEY;
+
+  if (!options.force && Array.isArray(state.nonogramTemplatesByQuiz[key])) {
+    return state.nonogramTemplatesByQuiz[key];
+  }
+
+  if (!window.firebaseDB || !window.firebaseDoc || !window.firebaseGetDoc) {
+    if (!Array.isArray(state.nonogramTemplatesByQuiz[key])) {
+      state.nonogramTemplatesByQuiz[key] = [];
+    }
+    return state.nonogramTemplatesByQuiz[key];
+  }
+
+  try {
+    const ref = window.firebaseDoc(window.firebaseDB, "nonogram_templates", NONOGRAM_TEMPLATE_GLOBAL_KEY);
+    const snap = await window.firebaseGetDoc(ref);
+    if (!snap?.exists?.()) {
+      state.nonogramTemplatesByQuiz[key] = [];
+      return [];
+    }
+
+    const data = snap.data() || {};
+    const normalized = (Array.isArray(data.templates) ? data.templates : [])
+      .map((template) => normalizeNonogramTemplate(template, WAIT_NONOGRAM_GRID_SIZE))
+      .filter(Boolean);
+
+    state.nonogramTemplatesByQuiz[key] = normalized;
+    return normalized;
+  } catch (error) {
+    console.error("Erro ao carregar templates de nonograma:", error);
+    if (!Array.isArray(state.nonogramTemplatesByQuiz[key])) {
+      state.nonogramTemplatesByQuiz[key] = [];
+    }
+    return state.nonogramTemplatesByQuiz[key];
+  }
+}
+
+async function saveCustomNonogramTemplateForQuiz(quizId, template) {
+  const key = NONOGRAM_TEMPLATE_GLOBAL_KEY;
+  if (!key || !template || !window.firebaseDB || !window.firebaseDoc || !window.firebaseSetDoc) {
+    return { ok: false, reason: "unavailable" };
+  }
+
+  const existing = await loadCustomNonogramTemplatesForQuiz(key);
+  const sameShape = existing.some((item) => item.rows.join("") === template.rows.join(""));
+  if (sameShape) {
+    return { ok: false, reason: "duplicate" };
+  }
+
+  const next = [template, ...existing].slice(0, 60);
+
+  try {
+    const ref = window.firebaseDoc(window.firebaseDB, "nonogram_templates", NONOGRAM_TEMPLATE_GLOBAL_KEY);
+    await window.firebaseSetDoc(ref, {
+      scope: "global",
+      templates: next.map((item) => ({
+        id: item.id,
+        name: item.name,
+        rows: item.rows,
+        createdAtMs: item.createdAtMs
+      })),
+      updatedAtMs: Date.now(),
+      updatedBy: state.profileSlug || state.user?.uid || ""
+    }, { merge: true });
+    state.nonogramTemplatesByQuiz[key] = next;
+    return { ok: true, reason: "saved" };
+  } catch (error) {
+    console.error("Erro ao salvar template de nonograma:", error);
+    const code = String(error?.code || "").toLowerCase();
+    if (code.includes("permission-denied")) {
+      // Keep a local session cache so the teacher can continue creating even before rules are deployed.
+      state.nonogramTemplatesByQuiz[key] = next;
+      return { ok: true, reason: "local-only" };
+    }
+    return { ok: false, reason: "save-error" };
+  }
+}
+
+function getActiveNonogramLibrary(quizId) {
+  const custom = getCachedNonogramTemplatesByQuiz(quizId);
+  return custom.length ? custom : NONOGRAM_ICON_LIBRARY;
+}
+
+function buildNonogramPuzzle(size, rng, library = NONOGRAM_ICON_LIBRARY) {
+  const sourceLibrary = Array.isArray(library) && library.length ? library : NONOGRAM_ICON_LIBRARY;
+
+  if (size === 8 && Array.isArray(sourceLibrary) && sourceLibrary.length) {
+    const index = Math.floor(rng() * sourceLibrary.length) % sourceLibrary.length;
+    const icon = sourceLibrary[index];
+    const matrix = iconRowsToMatrix(icon.rows, size);
+
+    if (matrix.length === size && matrix.every((row) => row.length === size)) {
+      return {
+        matrix,
+        name: String(icon?.name || "Desenho").trim() || "Desenho"
+      };
+    }
+  }
+
+  // Fallback for unexpected sizes.
+  return {
+    matrix: Array.from({ length: size }, () => Array.from({ length: size }, () => (rng() > 0.56 ? 1 : 0))),
+    name: "Desenho surpresa"
+  };
+}
+
+function getNonogramDrawingSuggestionsText() {
+  const libraryNames = NONOGRAM_ICON_LIBRARY
+    .map((item) => String(item?.name || "").trim())
+    .filter(Boolean);
+  const names = [...new Set([...libraryNames, ...NONOGRAM_DRAWING_SUGGESTIONS])];
+  return names.slice(0, 10).join(", ");
+}
+
+function buildLineClues(line) {
+  const clues = [];
+  let streak = 0;
+  line.forEach((value) => {
+    if (value) {
+      streak += 1;
+    } else if (streak > 0) {
+      clues.push(streak);
+      streak = 0;
+    }
+  });
+  if (streak > 0) {
+    clues.push(streak);
+  }
+  return clues.length ? clues : [0];
+}
+
+function buildNonogramClues(solution) {
+  const size = solution.length;
+  const rowClues = solution.map((row) => buildLineClues(row));
+  const colClues = Array.from({ length: size }, (_, col) => {
+    const column = Array.from({ length: size }, (_, row) => solution[row][col]);
+    return buildLineClues(column);
+  });
+
+  return { rowClues, colClues };
+}
+
+function calcWaitNonogramStats() {
+  let correctFilled = 0;
+  let wrongFilled = 0;
+  let totalFilled = 0;
+
+  for (let row = 0; row < waitNonogramState.size; row += 1) {
+    for (let col = 0; col < waitNonogramState.size; col += 1) {
+      const expected = Number(waitNonogramState.solution[row]?.[col] || 0);
+      const mark = Number(waitNonogramState.marks[row]?.[col] || 0);
+      if (expected === 1) {
+        totalFilled += 1;
+      }
+      if (mark === 1 && expected === 1) {
+        correctFilled += 1;
+      }
+      if (mark === 1 && expected === 0) {
+        wrongFilled += 1;
+      }
+    }
+  }
+
+  const progress = totalFilled > 0 ? Math.round((correctFilled / totalFilled) * 100) : 0;
+  return { correctFilled, wrongFilled, totalFilled, progress };
+}
+
+function computeWaitNonogramScore({ correctFilled, errors, completed }) {
+  const base = correctFilled * 100;
+  const penalty = errors * 50;
+  const completionBonus = completed ? 900 : 0;
+  return Math.max(0, base + completionBonus - penalty);
+}
+
+function resetWaitNonogramRuntime() {
+  if (waitNonogramState.autoAdvanceTimeoutId) {
+    clearTimeout(waitNonogramState.autoAdvanceTimeoutId);
+    waitNonogramState.autoAdvanceTimeoutId = null;
+  }
+  waitNonogramState.active = false;
+  waitNonogramState.submitted = false;
+}
+
+function clearWaitNonogramBoard() {
+  if (!waitNonogramState.active || waitNonogramState.completed || waitNonogramState.submitted) {
+    return;
+  }
+
+  waitNonogramState.marks = createEmptyNonogramMarks(waitNonogramState.size);
+  waitNonogramState.errors = 0;
+  renderWaitNonogramBoard();
+  updateWaitNonogramHud();
+}
+
+function toggleTeacherRevealMode() {
+  if (!state.isTeacher) {
+    return;
+  }
+
+  waitNonogramState.teacherRevealMode = !waitNonogramState.teacherRevealMode;
+  const toggleButton = document.getElementById("wait-nonogram-reveal");
+  if (toggleButton) {
+    toggleButton.textContent = waitNonogramState.teacherRevealMode ? "Ocultar desenho (professor)" : "Revelar desenho (professor)";
+  }
+  renderWaitNonogramBoard();
+  updateWaitNonogramHud();
+}
+
+function ensureNonogramCreatorMatrix() {
+  if (!Array.isArray(waitNonogramState.creatorMatrix) || waitNonogramState.creatorMatrix.length !== waitNonogramState.size) {
+    waitNonogramState.creatorMatrix = createEmptyNonogramMarks(waitNonogramState.size);
+  }
+}
+
+function renderWaitNonogramCreatorGrid() {
+  const grid = document.getElementById("wait-nonogram-creator-grid");
+  if (!grid || !state.isTeacher) {
+    return;
+  }
+
+  ensureNonogramCreatorMatrix();
+  grid.innerHTML = "";
+  const size = waitNonogramState.size;
+
+  for (let row = 0; row < size; row += 1) {
+    for (let col = 0; col < size; col += 1) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "wait-nonogram-creator-cell";
+      if (Number(waitNonogramState.creatorMatrix[row]?.[col] || 0) === 1) {
+        button.classList.add("is-on");
+      }
+
+      button.addEventListener("click", () => {
+        const current = Number(waitNonogramState.creatorMatrix[row][col] || 0);
+        waitNonogramState.creatorMatrix[row][col] = current === 1 ? 0 : 1;
+        renderWaitNonogramCreatorGrid();
+      });
+
+      grid.appendChild(button);
+    }
+  }
+}
+
+function setWaitNonogramCreatorMessage(text, tone = "info") {
+  const msg = document.getElementById("wait-nonogram-creator-msg");
+  if (!msg) {
+    return;
+  }
+  msg.textContent = String(text || "");
+  msg.classList.remove("is-success", "is-error");
+  if (tone === "success") {
+    msg.classList.add("is-success");
+  } else if (tone === "error") {
+    msg.classList.add("is-error");
+  }
+}
+
+async function saveCurrentNonogramCreatorTemplate(quiz) {
+  if (!state.isTeacher || !quiz?.id) {
+    return;
+  }
+
+  ensureNonogramCreatorMatrix();
+  const rows = iconMatrixToRows(waitNonogramState.creatorMatrix, waitNonogramState.size);
+  const filled = rows.join("").split("").reduce((acc, char) => acc + (char === "1" ? 1 : 0), 0);
+  if (filled < 8) {
+    setWaitNonogramCreatorMessage("Desenho muito vazio. Preencha mais células antes de salvar.", "error");
+    return;
+  }
+
+  const nameInput = document.getElementById("wait-nonogram-creator-name");
+  const templateName = String(nameInput?.value || waitNonogramState.creatorName || "").trim() || `Desenho ${Date.now().toString().slice(-4)}`;
+  const template = normalizeNonogramTemplate({
+    id: `tpl_${Date.now().toString(36)}`,
+    name: templateName,
+    rows,
+    createdAtMs: Date.now()
+  }, waitNonogramState.size);
+
+  if (!template) {
+    setWaitNonogramCreatorMessage("Não foi possível validar o desenho.", "error");
+    return;
+  }
+
+  const result = await saveCustomNonogramTemplateForQuiz(quiz.id, template);
+  if (!result?.ok) {
+    if (result?.reason === "duplicate") {
+      setWaitNonogramCreatorMessage("Esse desenho já existe para este quiz.", "error");
+    } else if (result?.reason === "unavailable") {
+      setWaitNonogramCreatorMessage("Salvamento indisponível agora. Verifique conexão e recarregue.", "error");
+    } else {
+      setWaitNonogramCreatorMessage("Não foi possível salvar no momento. Tente novamente.", "error");
+    }
+    return;
+  }
+
+  if (result.reason === "local-only") {
+    setWaitNonogramCreatorMessage("Desenho salvo apenas nesta sessão (publique as regras do Firestore para salvar no banco).", "success");
+  } else {
+    setWaitNonogramCreatorMessage("Desenho salvo! Ele já pode aparecer nos próximos nonogramas da turma.", "success");
+  }
+}
+
+function setHomeNonogramCreatorMessage(text, tone = "info") {
+  const msg = document.getElementById("home-nonogram-creator-msg");
+  if (!msg) {
+    return;
+  }
+  msg.textContent = String(text || "");
+  msg.classList.remove("is-success", "is-error");
+  if (tone === "success") {
+    msg.classList.add("is-success");
+  } else if (tone === "error") {
+    msg.classList.add("is-error");
+  }
+}
+
+function renderHomeNonogramCreatorGrid() {
+  const grid = document.getElementById("home-nonogram-creator-grid");
+  if (!grid) {
+    return;
+  }
+
+  ensureNonogramCreatorMatrix();
+  grid.innerHTML = "";
+  const size = waitNonogramState.size;
+
+  for (let row = 0; row < size; row += 1) {
+    for (let col = 0; col < size; col += 1) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "wait-nonogram-creator-cell";
+      if (Number(waitNonogramState.creatorMatrix[row]?.[col] || 0) === 1) {
+        button.classList.add("is-on");
+      }
+
+      button.addEventListener("click", () => {
+        const current = Number(waitNonogramState.creatorMatrix[row][col] || 0);
+        waitNonogramState.creatorMatrix[row][col] = current === 1 ? 0 : 1;
+        renderHomeNonogramCreatorGrid();
+      });
+
+      grid.appendChild(button);
+    }
+  }
+}
+
+function renderHomeNonogramTemplateList() {
+  const list = document.getElementById("home-nonogram-template-list");
+  const count = document.getElementById("home-nonogram-template-count");
+  if (!list) {
+    return;
+  }
+
+  const templates = getCachedNonogramTemplatesByQuiz("global");
+  if (count) {
+    count.textContent = String(templates.length);
+  }
+
+  if (!templates.length) {
+    list.innerHTML = `<li class="wait-nonogram-leader-empty">Nenhum nonograma criado ainda.</li>`;
+    return;
+  }
+
+  list.innerHTML = templates
+    .slice(0, 60)
+    .map((template, index) => `<li class="wait-nonogram-leader-item"><span>${index + 1}. ${String(template.name || "Desenho")}</span></li>`)
+    .join("");
+}
+
+async function saveHomeNonogramCreatorTemplate() {
+  if (!state.isTeacher) {
+    return;
+  }
+
+  ensureNonogramCreatorMatrix();
+  const rows = iconMatrixToRows(waitNonogramState.creatorMatrix, waitNonogramState.size);
+  const filled = rows.join("").split("").reduce((acc, char) => acc + (char === "1" ? 1 : 0), 0);
+  if (filled < 8) {
+    setHomeNonogramCreatorMessage("Desenho muito vazio. Preencha mais células antes de salvar.", "error");
+    return;
+  }
+
+  const nameInput = document.getElementById("home-nonogram-creator-name");
+  const templateName = String(nameInput?.value || waitNonogramState.creatorName || "").trim() || `Desenho ${Date.now().toString().slice(-4)}`;
+  const template = normalizeNonogramTemplate({
+    id: `tpl_${Date.now().toString(36)}`,
+    name: templateName,
+    rows,
+    createdAtMs: Date.now()
+  }, waitNonogramState.size);
+
+  if (!template) {
+    setHomeNonogramCreatorMessage("Nao foi possível validar o desenho.", "error");
+    return;
+  }
+
+  const result = await saveCustomNonogramTemplateForQuiz("global", template);
+  if (!result?.ok) {
+    if (result?.reason === "duplicate") {
+      setHomeNonogramCreatorMessage("Esse desenho ja existe na biblioteca global.", "error");
+    } else if (result?.reason === "unavailable") {
+      setHomeNonogramCreatorMessage("Salvamento indisponivel agora. Verifique conexao e recarregue.", "error");
+    } else {
+      setHomeNonogramCreatorMessage("Nao foi possível salvar no momento. Tente novamente.", "error");
+    }
+    return;
+  }
+
+  if (result.reason === "local-only") {
+    setHomeNonogramCreatorMessage("Desenho salvo apenas nesta sessao (publique as regras para salvar no banco).", "success");
+  } else {
+    setHomeNonogramCreatorMessage("Desenho salvo na biblioteca global!", "success");
+  }
+  renderHomeNonogramTemplateList();
+}
+
+function closeHomeNonogramEditorModal() {
+  const modal = document.getElementById("home-nonogram-editor-modal");
+  if (modal) {
+    modal.classList.add("hidden");
+  }
+}
+
+function ensureHomeNonogramEditorModal() {
+  let modal = document.getElementById("home-nonogram-editor-modal");
+  if (modal) {
+    return modal;
+  }
+
+  modal = document.createElement("div");
+  modal.id = "home-nonogram-editor-modal";
+  modal.className = "modal-overlay hidden";
+  modal.innerHTML = `
+    <div class="modal-card home-nonogram-editor-card">
+      <h3>Editor de nonograma</h3>
+      <p>Desenhe um icone 8x8 para a biblioteca global de nonogramas.</p>
+      <label class="home-nonogram-editor-field" for="home-nonogram-creator-name">
+        Nome do desenho
+        <input id="home-nonogram-creator-name" type="text" maxlength="40" placeholder="Ex.: Foguete" />
+      </label>
+      <p class="wait-nonogram-creator-msg">Sugestoes: ${getNonogramDrawingSuggestionsText()}</p>
+      <div id="home-nonogram-creator-grid" class="wait-nonogram-creator-grid"></div>
+      <p id="home-nonogram-creator-msg" class="wait-nonogram-creator-msg"></p>
+      <section class="wait-nonogram-leaderboard-wrap">
+        <h4>Nonogramas criados pelo professor (<span id="home-nonogram-template-count">0</span>)</h4>
+        <ol id="home-nonogram-template-list" class="wait-nonogram-leaderboard"></ol>
+      </section>
+      <div class="modal-actions">
+        <button id="home-nonogram-clear" class="btn btn-ghost" type="button">Limpar</button>
+        <button id="home-nonogram-save" class="btn btn-primary" type="button">Salvar desenho</button>
+        <button id="home-nonogram-close" class="btn btn-ghost" type="button">Fechar</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) {
+      closeHomeNonogramEditorModal();
+    }
+  });
+
+  const closeButton = modal.querySelector("#home-nonogram-close");
+  if (closeButton) {
+    closeButton.addEventListener("click", () => {
+      closeHomeNonogramEditorModal();
+    });
+  }
+
+  const clearButton = modal.querySelector("#home-nonogram-clear");
+  if (clearButton) {
+    clearButton.addEventListener("click", () => {
+      waitNonogramState.creatorMatrix = createEmptyNonogramMarks(waitNonogramState.size);
+      renderHomeNonogramCreatorGrid();
+      setHomeNonogramCreatorMessage("Desenho limpo.");
+    });
+  }
+
+  const saveButton = modal.querySelector("#home-nonogram-save");
+  if (saveButton) {
+    saveButton.addEventListener("click", async () => {
+      const nameInput = document.getElementById("home-nonogram-creator-name");
+      waitNonogramState.creatorName = String(nameInput?.value || "").trim();
+
+      saveButton.disabled = true;
+      await saveHomeNonogramCreatorTemplate();
+      saveButton.disabled = false;
+    });
+  }
+
+  return modal;
+}
+
+function openHomeNonogramEditorModal() {
+  if (!state.isTeacher) {
+    return;
+  }
+
+  const modal = ensureHomeNonogramEditorModal();
+
+  waitNonogramState.size = WAIT_NONOGRAM_GRID_SIZE;
+  waitNonogramState.creatorMatrix = createEmptyNonogramMarks(waitNonogramState.size);
+  waitNonogramState.creatorName = "";
+
+  const nameInput = document.getElementById("home-nonogram-creator-name");
+  if (nameInput) {
+    nameInput.value = "";
+  }
+
+  setHomeNonogramCreatorMessage("Desenhe e salve na biblioteca global.");
+  renderHomeNonogramCreatorGrid();
+  loadCustomNonogramTemplatesForQuiz("global", { force: true }).then(() => {
+    renderHomeNonogramTemplateList();
+  });
+  modal.classList.remove("hidden");
+}
+
+function ensureWaitNonogramContainer() {
+  const resultScreen = document.getElementById("result-screen");
+  if (!resultScreen) {
+    return null;
+  }
+
+  let container = document.getElementById("result-wait-nonogram");
+  if (!container) {
+    container = document.createElement("section");
+    container.id = "result-wait-nonogram";
+    container.className = "wait-nonogram hidden";
+    resultScreen.appendChild(container);
+  }
+
+  return container;
+}
+
+function hideWaitNonogram() {
+  resetWaitNonogramRuntime();
+  const container = document.getElementById("result-wait-nonogram");
+  if (container) {
+    container.classList.add("hidden");
+    container.innerHTML = "";
+  }
+}
+
+function updateWaitNonogramHud() {
+  const progressEl = document.getElementById("wait-nonogram-progress");
+  const errorsEl = document.getElementById("wait-nonogram-errors");
+  const scoreEl = document.getElementById("wait-nonogram-score");
+  const solvedEl = document.getElementById("wait-nonogram-solved");
+  const levelEl = document.getElementById("wait-nonogram-level");
+  const statusEl = document.getElementById("wait-nonogram-status");
+
+  const stats = calcWaitNonogramStats();
+  waitNonogramState.progress = stats.progress;
+  waitNonogramState.roundScore = computeWaitNonogramScore({
+    correctFilled: stats.correctFilled,
+    errors: waitNonogramState.errors,
+    completed: waitNonogramState.completed
+  });
+  const liveTotalScore = waitNonogramState.totalScore + (waitNonogramState.submitted ? 0 : waitNonogramState.roundScore);
+  waitNonogramState.score = liveTotalScore;
+  waitNonogramState.level = 1 + Math.floor(Number(waitNonogramState.solvedCount || 0) / 3);
+
+  if (progressEl) progressEl.textContent = `${waitNonogramState.progress}%`;
+  if (errorsEl) errorsEl.textContent = String(waitNonogramState.errors);
+  if (scoreEl) scoreEl.textContent = String(liveTotalScore);
+  if (solvedEl) solvedEl.textContent = String(waitNonogramState.solvedCount);
+  if (levelEl) levelEl.textContent = String(waitNonogramState.level);
+
+  if (statusEl) {
+    if (waitNonogramState.completed) {
+      statusEl.textContent = `Voce concluiu: ${waitNonogramState.currentPuzzleName || "Desenho"}. Carregando o proximo nonograma...`;
+    } else if (state.isTeacher && waitNonogramState.teacherRevealMode) {
+      statusEl.textContent = `Nivel ${waitNonogramState.level} ativo. Modo professor: desenho revelado para conferencia.`;
+    } else {
+      statusEl.textContent = `Nivel ${waitNonogramState.level} ativo. Sem limite de tempo: avance no seu ritmo.`;
+    }
+  }
+}
+
+function renderWaitNonogramBoard() {
+  const board = document.getElementById("wait-nonogram-board");
+  if (!board) {
+    return;
+  }
+
+  board.innerHTML = "";
+  const size = waitNonogramState.size;
+
+  for (let row = 0; row < size; row += 1) {
+    const rowWrap = document.createElement("div");
+    rowWrap.className = "wait-nonogram-row";
+
+    const clue = document.createElement("div");
+    clue.className = "wait-nonogram-row-clue";
+    clue.textContent = (waitNonogramState.rowClues[row] || [0]).join(" / ");
+    rowWrap.appendChild(clue);
+
+    for (let col = 0; col < size; col += 1) {
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "wait-nonogram-cell";
+      const mark = Number(waitNonogramState.marks[row]?.[col] || 0);
+      const expected = Number(waitNonogramState.solution[row]?.[col] || 0);
+      if (mark === 1) {
+        cell.classList.add("is-filled");
+      } else if (mark === -1) {
+        cell.classList.add("is-crossed");
+        cell.textContent = "x";
+      } else if (state.isTeacher && waitNonogramState.teacherRevealMode && expected === 1) {
+        cell.classList.add("is-revealed");
+        cell.textContent = "•";
+      }
+
+      cell.addEventListener("click", () => {
+        if (!waitNonogramState.active || waitNonogramState.completed || waitNonogramState.submitted) {
+          return;
+        }
+
+        const current = Number(waitNonogramState.marks[row][col] || 0);
+        const next = current === 1 ? 0 : 1;
+        waitNonogramState.marks[row][col] = next;
+        if (current !== 1 && next === 1 && waitNonogramState.solution[row][col] === 0) {
+          waitNonogramState.errors += 1;
+        }
+
+        const stats = calcWaitNonogramStats();
+        if (stats.correctFilled === stats.totalFilled && stats.wrongFilled === 0) {
+          waitNonogramState.completed = true;
+          submitWaitNonogramScore("completed");
+        }
+
+        renderWaitNonogramBoard();
+        updateWaitNonogramHud();
+      });
+
+      cell.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        if (!waitNonogramState.active || waitNonogramState.completed || waitNonogramState.submitted) {
+          return;
+        }
+
+        const current = Number(waitNonogramState.marks[row][col] || 0);
+        waitNonogramState.marks[row][col] = current === -1 ? 0 : -1;
+        renderWaitNonogramBoard();
+        updateWaitNonogramHud();
+      });
+
+      rowWrap.appendChild(cell);
+    }
+
+    board.appendChild(rowWrap);
+  }
+}
+
+function renderWaitNonogramLeaderboard(rows) {
+  const list = document.getElementById("wait-nonogram-leaderboard");
+  if (!list) {
+    return;
+  }
+
+  if (!rows.length) {
+    list.innerHTML = `<li class="wait-nonogram-leader-empty">Sem resultados ainda nesta rodada.</li>`;
+    return;
+  }
+
+  list.innerHTML = rows.map((entry, index) => {
+    const isSelf = String(entry.slug || "") && String(entry.slug) === String(state.profileSlug || "");
+    const cls = isSelf ? "wait-nonogram-leader-item is-self" : "wait-nonogram-leader-item";
+    return `<li class="${cls}"><span>${index + 1}. ${entry.nome || "Aluno"}</span><strong>${entry.score || 0}</strong></li>`;
+  }).join("");
+}
+
+async function fetchWaitNonogramLeaderboard() {
+  if (!waitNonogramState.lobbyKey || !window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs) {
+    return;
+  }
+
+  try {
+    const ref = window.firebaseCollection(window.firebaseDB, "nonogram_scores");
+    let snap;
+    if (window.firebaseQuery && window.firebaseWhere) {
+      const q = window.firebaseQuery(
+        ref,
+        window.firebaseWhere("lobbyKey", "==", waitNonogramState.lobbyKey),
+        window.firebaseWhere("dateKey", "==", waitNonogramState.dateKey)
+      );
+      snap = await window.firebaseGetDocs(q);
+    } else {
+      snap = await window.firebaseGetDocs(ref);
+    }
+
+    const rows = [];
+    snap.forEach((docSnap) => {
+      const data = docSnap.data() || {};
+      if (String(data.lobbyKey || "") !== waitNonogramState.lobbyKey) {
+        return;
+      }
+      if (String(data.dateKey || "") !== waitNonogramState.dateKey) {
+        return;
+      }
+      rows.push({
+        nome: String(data.nome || "Aluno"),
+        slug: String(data.slug || ""),
+        score: Number(data.score || 0),
+        errors: Number(data.errors || 0),
+        updatedAtMs: Number(data.updatedAtMs || 0)
+      });
+    });
+
+    rows.sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      if (a.errors !== b.errors) {
+        return a.errors - b.errors;
+      }
+      return b.updatedAtMs - a.updatedAtMs;
+    });
+
+    renderWaitNonogramLeaderboard(rows.slice(0, 10));
+  } catch (error) {
+    console.error("Erro ao atualizar placar do nonograma:", error);
+  }
+}
+
+async function submitWaitNonogramScore(reason) {
+  if (waitNonogramState.submitted) {
+    return;
+  }
+
+  waitNonogramState.submitted = true;
+  waitNonogramState.active = false;
+  const completedRound = String(reason || "") === "completed" || waitNonogramState.completed;
+  if (completedRound && !waitNonogramState.roundCounted) {
+    waitNonogramState.totalScore += waitNonogramState.roundScore;
+    waitNonogramState.solvedCount += 1;
+    waitNonogramState.roundCounted = true;
+  }
+  updateWaitNonogramHud();
+
+  const saveButton = document.getElementById("wait-nonogram-restart");
+  if (saveButton) {
+    saveButton.classList.remove("hidden");
+  }
+
+  if (!window.firebaseDB || !window.firebaseDoc || !window.firebaseSetDoc) {
+    return;
+  }
+
+  try {
+    const profile = normalizeLobbySegment(state.profileSlug || state.user?.uid || "anon", "anon");
+    const docId = `${waitNonogramState.lobbyKey}__${profile}`;
+    const ref = window.firebaseDoc(window.firebaseDB, "nonogram_scores", docId);
+
+    await window.firebaseSetDoc(ref, {
+      lobbyKey: waitNonogramState.lobbyKey,
+      dateKey: waitNonogramState.dateKey,
+      turmaId: state.classroomId || "",
+      turmaNome: state.classroomName || "",
+      quizId: waitNonogramState.quizId,
+      puzzleIndex: waitNonogramState.puzzleIndex,
+      slug: state.profileSlug || "",
+      nome: state.studentName || state.user?.displayName || "Aluno",
+      score: waitNonogramState.totalScore,
+      roundScore: waitNonogramState.roundScore,
+      solvedCount: waitNonogramState.solvedCount,
+      progress: waitNonogramState.progress,
+      errors: waitNonogramState.errors,
+      completed: Boolean(waitNonogramState.completed),
+      endReason: String(reason || "completed"),
+      updatedAtMs: Date.now()
+    }, { merge: true });
+
+    fetchWaitNonogramLeaderboard();
+
+    if (completedRound) {
+      const quiz = getSelectedQuiz();
+      if (quiz && String(quiz.id || "") === waitNonogramState.quizId) {
+        if (waitNonogramState.autoAdvanceTimeoutId) {
+          clearTimeout(waitNonogramState.autoAdvanceTimeoutId);
+        }
+        waitNonogramState.autoAdvanceTimeoutId = setTimeout(() => {
+          startWaitNonogramRound(quiz, { advance: true });
+        }, 1100);
+      }
+    }
+  } catch (error) {
+    console.error("Erro ao salvar score do nonograma:", error);
+  }
+}
+
+async function startWaitNonogramRound(quiz, options = {}) {
+  if (waitNonogramState.autoAdvanceTimeoutId) {
+    clearTimeout(waitNonogramState.autoAdvanceTimeoutId);
+    waitNonogramState.autoAdvanceTimeoutId = null;
+  }
+  if (options.advance) {
+    waitNonogramState.puzzleIndex += 1;
+  }
+
+  const lobbyKey = buildWaitClassLobbyKey(quiz);
+  const dateKey = getWaitNonogramDateKey();
+  await loadCustomNonogramTemplatesForQuiz(quiz?.id);
+  const activeLibrary = getActiveNonogramLibrary(quiz?.id);
+  const rng = createSeededRng(`${lobbyKey}::${dateKey}::${waitNonogramState.puzzleIndex}`);
+  const puzzle = buildNonogramPuzzle(WAIT_NONOGRAM_GRID_SIZE, rng, activeLibrary);
+  const solution = puzzle.matrix;
+  const clues = buildNonogramClues(solution);
+
+  waitNonogramState.active = true;
+  waitNonogramState.quizId = String(quiz?.id || "");
+  waitNonogramState.lobbyKey = lobbyKey;
+  waitNonogramState.dateKey = dateKey;
+  waitNonogramState.size = WAIT_NONOGRAM_GRID_SIZE;
+  waitNonogramState.solution = solution;
+  waitNonogramState.currentPuzzleName = String(puzzle.name || "Desenho");
+  waitNonogramState.marks = createEmptyNonogramMarks(WAIT_NONOGRAM_GRID_SIZE);
+  waitNonogramState.rowClues = clues.rowClues;
+  waitNonogramState.colClues = clues.colClues;
+  waitNonogramState.errors = 0;
+  waitNonogramState.completed = false;
+  waitNonogramState.submitted = false;
+  waitNonogramState.roundCounted = false;
+  waitNonogramState.teacherRevealMode = false;
+  waitNonogramState.progress = 0;
+  waitNonogramState.roundScore = 0;
+  waitNonogramState.score = waitNonogramState.totalScore;
+  waitNonogramState.level = 1 + Math.floor(Number(waitNonogramState.solvedCount || 0) / 3);
+  waitNonogramState.creatorName = "";
+  waitNonogramState.creatorMatrix = createEmptyNonogramMarks(WAIT_NONOGRAM_GRID_SIZE);
+
+  const container = ensureWaitNonogramContainer();
+  if (!container) {
+    return;
+  }
+
+  container.classList.remove("hidden");
+  container.innerHTML = `
+    <div class="wait-nonogram-head">
+      <h3>Nonograma da Turma · Fase ${waitNonogramState.puzzleIndex + 1} · Nivel ${waitNonogramState.level}</h3>
+      <p>Todos da turma recebem o mesmo puzzle do dia. Modo progressivo sem limite de tempo.</p>
+    </div>
+    <div class="wait-nonogram-metrics">
+      <span><strong id="wait-nonogram-level">${waitNonogramState.level}</strong> nivel</span>
+      <span><strong id="wait-nonogram-progress">0%</strong> progresso</span>
+      <span><strong id="wait-nonogram-errors">0</strong> erros</span>
+      <span><strong id="wait-nonogram-solved">${waitNonogramState.solvedCount}</strong> completos</span>
+      <span><strong id="wait-nonogram-score">${waitNonogramState.totalScore}</strong> pontos</span>
+    </div>
+    <details class="wait-nonogram-help" open>
+      <summary>Como jogar</summary>
+      <ol>
+        <li>Os números ao lado e no topo mostram blocos contínuos de quadrados preenchidos.</li>
+        <li>Exemplo: "3 / 1" significa um bloco de 3 e depois um bloco de 1, com pelo menos um espaço entre eles.</li>
+        <li>Clique para preencher um quadrado que você acha correto.</li>
+        <li>Use botão direito para marcar "X" onde você acha que deve ficar vazio.</li>
+        <li>Complete o ícone inteiro para registrar sua pontuação no placar.</li>
+      </ol>
+    </details>
+    <div class="wait-nonogram-col-clues" id="wait-nonogram-col-clues"></div>
+    <div class="wait-nonogram-board" id="wait-nonogram-board"></div>
+    <p class="wait-nonogram-status" id="wait-nonogram-status">Nivel ${waitNonogramState.level} ativo. Sem limite de tempo: avance no seu ritmo.</p>
+    <div class="wait-nonogram-actions">
+      <button type="button" class="btn btn-ghost btn-sm hidden" id="wait-nonogram-restart">Próximo nonograma</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="wait-nonogram-clear">Limpar grade</button>
+      ${state.isTeacher ? '<button type="button" class="btn btn-ghost btn-sm" id="wait-nonogram-reveal">Revelar desenho (professor)</button>' : ""}
+      <button type="button" class="btn btn-ghost btn-sm" id="wait-nonogram-refresh">Atualizar placar</button>
+    </div>
+    <section class="wait-nonogram-leaderboard-wrap">
+      <h4>Placar da turma (top 10)</h4>
+      <ol id="wait-nonogram-leaderboard" class="wait-nonogram-leaderboard"></ol>
+    </section>
+    ${state.isTeacher ? `
+      <section class="wait-nonogram-creator">
+        <h4>Criador de nonograma (professor)</h4>
+        <p>Crie um desenho 8x8. Os alunos poderão receber esse desenho nas próximas fases.</p>
+        <p class="wait-nonogram-creator-msg">Sugestoes: ${getNonogramDrawingSuggestionsText()}</p>
+        <input id="wait-nonogram-creator-name" type="text" maxlength="40" placeholder="Nome do desenho (ex.: Foguete)" />
+        <div id="wait-nonogram-creator-grid" class="wait-nonogram-creator-grid"></div>
+        <div class="wait-nonogram-actions">
+          <button type="button" class="btn btn-ghost btn-sm" id="wait-nonogram-creator-clear">Limpar desenho</button>
+          <button type="button" class="btn btn-primary btn-sm" id="wait-nonogram-creator-save">Salvar desenho</button>
+        </div>
+        <p id="wait-nonogram-creator-msg" class="wait-nonogram-creator-msg"></p>
+      </section>
+    ` : ""}
+  `;
+
+  const colClues = document.getElementById("wait-nonogram-col-clues");
+  if (colClues) {
+    colClues.innerHTML = waitNonogramState.colClues
+      .map((clue) => `<span class="wait-nonogram-col-clue">${clue.map((value) => `<span>${value}</span>`).join("")}</span>`)
+      .join("");
+  }
+
+  const restartButton = document.getElementById("wait-nonogram-restart");
+  if (restartButton) {
+    restartButton.addEventListener("click", () => {
+      startWaitNonogramRound(quiz, { advance: true });
+    });
+  }
+
+  const clearButton = document.getElementById("wait-nonogram-clear");
+  if (clearButton) {
+    clearButton.addEventListener("click", () => {
+      clearWaitNonogramBoard();
+    });
+  }
+
+  const revealButton = document.getElementById("wait-nonogram-reveal");
+  if (revealButton) {
+    revealButton.addEventListener("click", () => {
+      toggleTeacherRevealMode();
+    });
+  }
+
+  const creatorNameInput = document.getElementById("wait-nonogram-creator-name");
+  if (creatorNameInput) {
+    creatorNameInput.addEventListener("input", () => {
+      waitNonogramState.creatorName = creatorNameInput.value;
+    });
+  }
+
+  const creatorClearButton = document.getElementById("wait-nonogram-creator-clear");
+  if (creatorClearButton) {
+    creatorClearButton.addEventListener("click", () => {
+      waitNonogramState.creatorMatrix = createEmptyNonogramMarks(waitNonogramState.size);
+      renderWaitNonogramCreatorGrid();
+      setWaitNonogramCreatorMessage("Desenho limpo.");
+    });
+  }
+
+  const creatorSaveButton = document.getElementById("wait-nonogram-creator-save");
+  if (creatorSaveButton) {
+    creatorSaveButton.addEventListener("click", async () => {
+      creatorSaveButton.disabled = true;
+      await saveCurrentNonogramCreatorTemplate(quiz);
+      creatorSaveButton.disabled = false;
+    });
+  }
+
+  const refreshButton = document.getElementById("wait-nonogram-refresh");
+  if (refreshButton) {
+    refreshButton.addEventListener("click", async () => {
+      refreshButton.disabled = true;
+      await fetchWaitNonogramLeaderboard();
+      setTimeout(() => {
+        refreshButton.disabled = false;
+      }, 900);
+    });
+  }
+
+  renderWaitNonogramBoard();
+  renderWaitNonogramCreatorGrid();
+  updateWaitNonogramHud();
+  fetchWaitNonogramLeaderboard();
+}
+
+function renderWaitNonogramForWaitMode(quiz, shouldShow) {
+  if (!shouldShow || !quiz?.id) {
+    hideWaitNonogram();
+    return;
+  }
+
+  const lobbyKey = buildWaitClassLobbyKey(quiz);
+  const dateKey = getWaitNonogramDateKey();
+  const sameRound = waitNonogramState.active
+    && waitNonogramState.quizId === String(quiz.id)
+    && waitNonogramState.lobbyKey === lobbyKey
+    && waitNonogramState.dateKey === dateKey;
+
+  if (sameRound) {
+    const container = ensureWaitNonogramContainer();
+    if (container) {
+      container.classList.remove("hidden");
+    }
+    return;
+  }
+
+  waitNonogramState.puzzleIndex = 0;
+  waitNonogramState.totalScore = 0;
+  waitNonogramState.solvedCount = 0;
+  resetWaitNonogramRuntime();
+  startWaitNonogramRound(quiz);
+}
+
+function triggerFocusWaitGrace(reasonText) {
+  if (!isFocusWaitModeActive() || state.isTeacher || focusWaitPenaltyInFlight) {
+    return;
+  }
+
+  if (isFocusWaitRecoverySatisfied()) {
+    return;
+  }
+
+  const normalizedReason = String(reasonText || "Você saiu do foco antes da liberação do professor.").trim();
+
+  if (!isFocusWaitGraceActive()) {
+    focusWaitGraceReason = normalizedReason;
+    focusWaitGraceDeadlineMs = Date.now() + 10000;
+    showBottomNotice("Atenção: volte ao foco em tela cheia em até 10s para evitar penalidade.", "info", 4200);
+  }
+
+  updateFocusWaitAlert();
+  clearFocusWaitGraceTimers();
+
+  focusWaitGraceIntervalId = setInterval(() => {
+    if (!isFocusWaitModeActive()) {
+      clearFocusWaitGrace();
+      return;
+    }
+
+    if (isFocusWaitRecoverySatisfied()) {
+      resolveFocusWaitGraceWithoutPenalty();
+      return;
+    }
+
+    updateFocusWaitAlert();
+  }, 200);
+
+  focusWaitGraceTimeoutId = setTimeout(() => {
+    const reason = focusWaitGraceReason || normalizedReason;
+    clearFocusWaitGrace();
+    handleFocusWaitPenalty(reason);
+  }, Math.max(0, Number(focusWaitGraceDeadlineMs || 0) - Date.now()));
+}
+
+function mergeFocusWaitPenaltyIntoAttempt(attempt, penalty) {
+  if (!attempt || !penalty) {
+    return attempt;
+  }
+
+  const nextResult = {
+    ...(attempt.result || {}),
+    focusExitPenaltyApplied: true,
+    focusExitPenaltyReason: penalty.reason,
+    focusExitPenaltyAt: penalty.at
+  };
+
+  return {
+    ...attempt,
+    focusExitPenaltyApplied: true,
+    focusExitPenaltyReason: penalty.reason,
+    focusExitPenaltyAt: penalty.at,
+    result: nextResult
+  };
+}
+
+function handleFocusWaitPenalty(reasonText) {
+  const now = Date.now();
+  if (focusWaitPenaltyInFlight || now - lastFocusWaitPenaltyAt < 1200) {
+    return;
+  }
+
+  const context = getPendingFocusWaitContext();
+  if (!context?.quiz || !context?.attempt) {
+    return;
+  }
+
+  const reason = String(reasonText || "Saiu do foco antes da liberação do professor.").trim();
+  const at = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  const penalty = {
+    applied: true,
+    reason,
+    at,
+    processName: FOCUS_WAIT_PROCESS_NAME
+  };
+
+  lastFocusWaitPenaltyAt = now;
+  focusWaitPenaltyInFlight = true;
+
+  const updatedAttempt = mergeFocusWaitPenaltyIntoAttempt(context.attempt, penalty);
+  saveStoredAttempt(context.quiz.id, updatedAttempt);
+  if (state.remoteAttemptsLoaded) {
+    state.remoteAttemptsByQuiz[context.quiz.id] = updatedAttempt;
+  }
+
+  if (state.selectedQuizId === context.quiz.id && updatedAttempt.result) {
+    showResult(updatedAttempt.result, "", { isBlocked: false });
+    updateReviewButtons(context.quiz, updatedAttempt);
+  }
+
+  showBottomNotice("Penalidade registrada: você saiu do foco antes da liberação do professor.", "error", 4200);
+  renderHome();
+
+  persistFocusWaitPenaltyToFirestore(context.quiz.id, penalty)
+    .catch((error) => {
+      console.error("Erro ao salvar penalidade de espera em foco:", error);
+    })
+    .finally(() => {
+      focusWaitPenaltyInFlight = false;
+    });
+}
+
+function persistFocusWaitPenaltyOnUnload() {
+  const context = getPendingFocusWaitContext();
+  if (!context?.quiz || !context?.attempt) {
+    return;
+  }
+
+  const reason = "Fechou a pagina durante o modo de espera sem liberacao do professor.";
+  const at = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
+  savePendingFocusWaitPenalty({
+    quizId: context.quiz.id,
+    reason,
+    at,
+    processName: FOCUS_WAIT_PROCESS_NAME
+  });
+}
+
+async function flushPendingFocusWaitPenalty() {
+  const pending = readPendingFocusWaitPenalty();
+  if (!pending?.quizId) {
+    return;
+  }
+
+  const navEntry = (performance.getEntriesByType && performance.getEntriesByType("navigation")[0]) || null;
+  const navType = String(navEntry?.type || "").toLowerCase();
+  if (navType === "reload") {
+    clearPendingFocusWaitPenalty();
+    return;
+  }
+
+  const penalty = {
+    applied: true,
+    reason: String(pending.reason || "Saiu do foco sem liberacao do professor."),
+    at: String(pending.at || new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })),
+    processName: FOCUS_WAIT_PROCESS_NAME
+  };
+
+  const existingAttempt = getKnownAttempt(String(pending.quizId));
+  if (existingAttempt && !existingAttempt.focusExitPenaltyApplied && !existingAttempt?.result?.focusExitPenaltyApplied) {
+    const updatedAttempt = mergeFocusWaitPenaltyIntoAttempt(existingAttempt, penalty);
+    saveStoredAttempt(String(pending.quizId), updatedAttempt);
+    if (state.remoteAttemptsLoaded) {
+      state.remoteAttemptsByQuiz[String(pending.quizId)] = updatedAttempt;
+    }
+  }
+
+  try {
+    await persistFocusWaitPenaltyToFirestore(String(pending.quizId), penalty);
+    clearPendingFocusWaitPenalty();
+  } catch (error) {
+    console.error("Erro ao reenviar penalidade pendente de espera em foco:", error);
+  }
+}
+
+async function persistFocusWaitPenaltyToFirestore(quizId, penalty) {
+  if (!quizId || !state.profileSlug || !window.firebaseDB || !window.firebaseCollection || !window.firebaseQuery || !window.firebaseWhere || !window.firebaseGetDocs || !window.firebaseSetDoc) {
+    return;
+  }
+
+  const attemptsRef = window.firebaseCollection(window.firebaseDB, "usuarios", state.profileSlug, "tentativas");
+  const q = window.firebaseQuery(
+    attemptsRef,
+    window.firebaseWhere("quizId", "==", quizId)
+  );
+  const snap = await window.firebaseGetDocs(q);
+  if (snap.empty) {
+    return;
+  }
+
+  let latestDoc = null;
+  let latestTs = -1;
+
+  snap.forEach((docSnap) => {
+    const data = docSnap.data() || {};
+    const ts = parsePtBrDate(String(data.data || ""));
+    if (!latestDoc || ts >= latestTs) {
+      latestDoc = docSnap;
+      latestTs = ts;
+    }
+  });
+
+  if (!latestDoc) {
+    return;
+  }
+
+  await window.firebaseSetDoc(latestDoc.ref, {
+    penalidadeSaidaFoco: true,
+    penalidadeSaidaFocoMotivo: String(penalty.reason || ""),
+    penalidadeSaidaFocoEm: String(penalty.at || ""),
+    processoControleFoco: FOCUS_WAIT_PROCESS_NAME,
+    atualizadoEmIso: new Date().toISOString()
+  }, { merge: true });
 }
 
 function resolveReviewOptionLabel(quiz, item, index, value) {
@@ -3595,11 +5969,16 @@ function getReviewOptionsForQuestion(quiz, item, index) {
     return itemOptions;
   }
 
+  const quizQuestions = Array.isArray(quiz?.questions) ? quiz.questions : [];
+  const normalizedItemTitle = String(item?.questionTitle || "").trim().toLowerCase();
   const byId = item?.questionId
-    ? (quiz?.questions || []).find((question) => String(question?.id || "") === String(item.questionId))
+    ? quizQuestions.find((question) => String(question?.id || "") === String(item.questionId))
     : null;
-  const byIndex = (quiz?.questions || [])[index];
-  const question = byId || byIndex;
+  const byTitle = normalizedItemTitle
+    ? quizQuestions.find((question) => String(question?.title || "").trim().toLowerCase() === normalizedItemTitle)
+    : null;
+  const byIndex = quizQuestions[index];
+  const question = byId || byTitle || byIndex;
   const questionOptions = Array.isArray(question?.options) ? question.options : [];
 
   return questionOptions
@@ -3613,6 +5992,41 @@ function getReviewOptionsForQuestion(quiz, item, index) {
       };
     })
     .filter((option) => option && option.value && option.label);
+}
+
+function getReviewExplanationForQuestion(quiz, item, index) {
+  if (typeof item?.questionExplanation === "string" && item.questionExplanation.trim()) {
+    return item.questionExplanation.trim();
+  }
+
+  const itemExplanationKeys = ["explanation", "justification", "justificativa", "feedback"];
+  for (const key of itemExplanationKeys) {
+    const value = item?.[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  const quizQuestions = Array.isArray(quiz?.questions) ? quiz.questions : [];
+  const normalizedItemTitle = String(item?.questionTitle || "").trim().toLowerCase();
+  const byId = item?.questionId
+    ? quizQuestions.find((question) => String(question?.id || "") === String(item.questionId))
+    : null;
+  const byTitle = normalizedItemTitle
+    ? quizQuestions.find((question) => String(question?.title || "").trim().toLowerCase() === normalizedItemTitle)
+    : null;
+  const byIndex = quizQuestions[index];
+  const question = byId || byTitle || byIndex;
+
+  const questionExplanationKeys = ["explanation", "questionExplanation", "justification", "justificativa"];
+  for (const key of questionExplanationKeys) {
+    const value = question?.[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
 }
 
 function renderReviewOptionsHtml(quiz, item, index) {
@@ -3681,6 +6095,7 @@ function openReviewScreen(backScreen = "result") {
       const statusClass = item.isCorrect ? "review-card-correct" : (item.selectedValue ? "review-card-wrong" : "review-card-blank");
       const statusText = item.selectedValue ? (item.isCorrect ? "Acertou" : "Errou") : "Em branco";
       const allOptionsHtml = renderReviewOptionsHtml(quiz, item, index);
+      const questionExplanation = getReviewExplanationForQuestion(quiz, item, index);
 
       return `
         <article class="builder-question-card review-card ${statusClass}">
@@ -3693,6 +6108,7 @@ function openReviewScreen(backScreen = "result") {
             <p class="review-options-title">Alternativas</p>
             ${allOptionsHtml}
           </div>
+          ${questionExplanation ? `<div class="review-explanation-block"><p class="review-options-title">Explicação</p><p class="review-question-explanation">${escapeHtml(questionExplanation)}</p></div>` : ""}
         </article>
       `;
     }).join("");
@@ -3712,12 +6128,15 @@ async function refreshRemoteAttempts(options = {}) {
     const attemptsRef = window.firebaseCollection(window.firebaseDB, "usuarios", state.profileSlug, "tentativas");
     const snap = await window.firebaseGetDocs(attemptsRef);
     const nextMap = {};
+    const nextCounts = {};
 
     snap.forEach((docSnap) => {
       const data = docSnap.data();
       if (!data?.quizId) {
         return;
       }
+
+      nextCounts[data.quizId] = Number(nextCounts[data.quizId] || 0) + 1;
 
       const current = nextMap[data.quizId];
       const nextTs = parsePtBrDate(data.data || "");
@@ -3730,6 +6149,9 @@ async function refreshRemoteAttempts(options = {}) {
         status: data.status || "completed",
         cancelReason: data.motivoCancelamento || "",
         blockedByViolation: Boolean(data.bloqueadoPorViolacao),
+        focusExitPenaltyApplied: Boolean(data.penalidadeSaidaFoco),
+        focusExitPenaltyReason: String(data.penalidadeSaidaFocoMotivo || ""),
+        focusExitPenaltyAt: String(data.penalidadeSaidaFocoEm || ""),
         result: {
           quizId: data.quizId,
           quizTitle: data.quizTitulo,
@@ -3742,7 +6164,10 @@ async function refreshRemoteAttempts(options = {}) {
           endedAt: data.fimAvaliacao || data.data,
           durationSeconds: Number(data.duracaoSegundos || 0),
           durationLabel: data.duracaoTexto || "",
-          questionResults: data.correcaoQuestoes || []
+          questionResults: data.correcaoQuestoes || [],
+          focusExitPenaltyApplied: Boolean(data.penalidadeSaidaFoco),
+          focusExitPenaltyReason: String(data.penalidadeSaidaFocoMotivo || ""),
+          focusExitPenaltyAt: String(data.penalidadeSaidaFocoEm || "")
         },
         answers: data.respostas || {},
         questionResults: data.correcaoQuestoes || []
@@ -3750,6 +6175,7 @@ async function refreshRemoteAttempts(options = {}) {
     });
 
     state.remoteAttemptsByQuiz = nextMap;
+    state.remoteAttemptCountsByQuiz = nextCounts;
     state.remoteAttemptsLoaded = true;
 
     getAllQuizzes().forEach((quiz) => {
@@ -3759,6 +6185,8 @@ async function refreshRemoteAttempts(options = {}) {
       } else {
         localStorage.removeItem(storageKey);
       }
+
+      setStoredAttemptCount(quiz.id, Number(nextCounts[quiz.id] || 0));
     });
 
     if (options.render !== false) {
@@ -3770,6 +6198,8 @@ async function refreshRemoteAttempts(options = {}) {
 }
 
 function renderHome() {
+  renderFocusWaitPersistentNotice();
+
   const allQuizzes = getAllQuizzes();
   const postedClassroomsMap = getPostedClassroomsByQuizId();
   const filterText = quizSearch.value.trim().toLowerCase();
@@ -3793,6 +6223,9 @@ function renderHome() {
 
   list.forEach((quiz) => {
     let attempt = getKnownAttempt(quiz.id);
+    const attemptsUsed = getKnownAttemptCount(quiz.id);
+    const maxAttempts = resolveQuizMaxAttempts(quiz);
+    const hasRemainingAttempts = state.isTeacher || attemptsUsed < maxAttempts;
     // Se o professor liberou nova tentativa, remove status cancelado/completed
     if (isRetakeReleased(quiz.id)) {
       // Remove do localStorage e do estado
@@ -3800,8 +6233,9 @@ function renderHome() {
       if (state.remoteAttemptsByQuiz) delete state.remoteAttemptsByQuiz[quiz.id];
       attempt = null;
     }
-    const canOpenQuiz = state.isTeacher || Boolean(attempt) || Boolean(quiz.allowStudentStart) || isRetakeReleased(quiz.id);
-    const mainButtonLabel = attempt ? "Ver detalhes" : (canOpenQuiz ? "Abrir quiz" : "Início bloqueado");
+    const canStartQuiz = state.isTeacher || (Boolean(quiz.allowStudentStart) && (isRetakeReleased(quiz.id) || hasRemainingAttempts));
+    const canOpenQuiz = canStartQuiz || Boolean(attempt);
+    const mainButtonLabel = canStartQuiz ? "Abrir quiz" : (attempt ? "Ver detalhes" : "Início bloqueado");
     const status = attempt?.status || (isRetakeReleased(quiz.id) ? "available" : "available");
     const statusLabel =
       status === "completed" ? "Concluído" :
@@ -3814,6 +6248,8 @@ function renderHome() {
       canOpenQuiz ? "1" : "0",
       quiz.allowStudentStart ? "1" : "0",
       quiz.allowStudentReview ? "1" : "0",
+      quiz.allowFocusExitAfterFinish ? "1" : "0",
+      `${attemptsUsed}/${maxAttempts}`,
       attempt?.result?.date || "",
       state.isTeacher ? (postedClassroomsMap[quiz.id] || []).map((item) => item.id).join(",") : "",
       state.isTeacher ? "1" : "0"
@@ -3875,6 +6311,7 @@ function renderHome() {
       <p>${quiz.description}</p>
       <ul class="quiz-meta">
         <li>Questões: ${quiz.questions.length}</li>
+        <li>Tentativas: ${state.isTeacher ? maxAttempts : `${attemptsUsed}/${maxAttempts}`}</li>
       </ul>
       ${state.isTeacher ? `<p class="quiz-visibility-note"><strong>Visível para:</strong> ${postedClassroomsHtml}</p>` : ""}
       <div class="quiz-card-actions">
@@ -3884,6 +6321,7 @@ function renderHome() {
         ${attempt?.result ? (quiz.allowStudentReview ? `<button class="btn btn-primary btn-sm" data-quick-review="${quiz.id}">Resumo</button>` : `<button class="btn btn-primary btn-sm btn-summary-blocked" data-summary-blocked="${quiz.id}" title="Atualizar">Resumo</button>`) : ""}
         ${state.isTeacher ? `<button class="btn btn-ghost btn-sm" data-toggle-start="${quiz.id}">${quiz.allowStudentStart ? "Bloquear início" : "Liberar início"}</button>` : ""}
         ${state.isTeacher ? `<button class="btn btn-ghost btn-sm" data-toggle-review="${quiz.id}">${quiz.allowStudentReview ? "Bloquear resumo" : "Liberar resumo"}</button>` : ""}
+        ${state.isTeacher ? `<button class="btn btn-ghost btn-sm" data-toggle-focus-exit="${quiz.id}">${quiz.allowFocusExitAfterFinish ? "Ativar modo de espera" : FOCUS_WAIT_RELEASE_BUTTON_LABEL}</button>` : ""}
         ${state.isTeacher ? `
           <div class="quiz-card-manage-actions">
             <button class="btn btn-ghost btn-sm" data-edit-quiz="${quiz.id}" title="Editar quiz" aria-label="Editar quiz">
@@ -3904,7 +6342,10 @@ function renderHome() {
         ` : ""}
       </div>
       ${!state.isTeacher && !attempt && !quiz.allowStudentStart ? `<p class="quiz-review-note">Início bloqueado no momento. Aguarde o professor liberar este quiz.</p>` : ""}
+      ${!state.isTeacher && !isRetakeReleased(quiz.id) && attemptsUsed >= maxAttempts ? `<p class="quiz-review-note">Limite de tentativas atingido (${attemptsUsed}/${maxAttempts}).</p>` : ""}
       ${attempt && !quiz.allowStudentReview ? `<p class="quiz-review-note">Resumo bloqueado no momento.</p>` : ""}
+      ${!state.isTeacher && attempt?.status === "completed" && !quiz.allowFocusExitAfterFinish && !attempt?.focusExitPenaltyApplied ? `<p class="quiz-review-note">${FOCUS_WAIT_PROCESS_NAME} ativo: permaneça no site até o professor clicar em '${FOCUS_WAIT_RELEASE_BUTTON_LABEL}'.</p>` : ""}
+      ${!state.isTeacher && attempt?.focusExitPenaltyApplied ? `<p class="quiz-review-note">Penalidade aplicada: saiu do foco antes da liberação do professor.</p>` : ""}
     `;
 
     const quickReviewButton = card.querySelector("button[data-quick-review]");
@@ -3949,6 +6390,11 @@ function renderHome() {
           return;
         }
 
+        if (canStartQuiz) {
+          await openQuiz(quiz.id);
+          return;
+        }
+
         if (attempt) {
           // Show result screen for this attempt
           state.selectedQuizId = quiz.id;
@@ -3964,8 +6410,6 @@ function renderHome() {
           }
           updateReviewButtons(quiz, syncedAttempt);
           showOnlyScreen("result");
-        } else {
-          await openQuiz(quiz.id);
         }
       });
     }
@@ -3995,6 +6439,13 @@ function renderHome() {
     if (toggleStartButton) {
       toggleStartButton.addEventListener("click", async () => {
         await toggleQuizStart(quiz.id);
+      });
+    }
+
+    const toggleFocusExitButton = card.querySelector("button[data-toggle-focus-exit]");
+    if (toggleFocusExitButton) {
+      toggleFocusExitButton.addEventListener("click", async () => {
+        await toggleQuizFocusExitRelease(quiz.id);
       });
     }
 
@@ -4036,6 +6487,10 @@ function renderHome() {
 
   quizGrid.replaceChildren(fragment);
   lastHomeRenderSignature = nextSignature;
+
+  if (!state.isTeacher && isFocusWaitModeActive() && document.visibilityState === "visible" && !isFullscreenActive()) {
+    triggerFocusWaitGrace("O modo foco exige tela cheia até o professor liberar o modo de espera.");
+  }
 }
 
 
@@ -4076,6 +6531,9 @@ async function getRemoteAttemptForQuiz(quizId) {
       status: latest.status || "completed",
       cancelReason: latest.motivoCancelamento || "",
       blockedByViolation: Boolean(latest.bloqueadoPorViolacao),
+      focusExitPenaltyApplied: Boolean(latest.penalidadeSaidaFoco),
+      focusExitPenaltyReason: String(latest.penalidadeSaidaFocoMotivo || ""),
+      focusExitPenaltyAt: String(latest.penalidadeSaidaFocoEm || ""),
       result: {
         quizId: latest.quizId,
         quizTitle: latest.quizTitulo,
@@ -4088,7 +6546,10 @@ async function getRemoteAttemptForQuiz(quizId) {
         endedAt: latest.fimAvaliacao || latest.data,
         durationSeconds: Number(latest.duracaoSegundos || 0),
         durationLabel: latest.duracaoTexto || "",
-        questionResults: latest.correcaoQuestoes || []
+        questionResults: latest.correcaoQuestoes || [],
+        focusExitPenaltyApplied: Boolean(latest.penalidadeSaidaFoco),
+        focusExitPenaltyReason: String(latest.penalidadeSaidaFocoMotivo || ""),
+        focusExitPenaltyAt: String(latest.penalidadeSaidaFocoEm || "")
       },
       answers: latest.respostas || {},
       questionResults: latest.correcaoQuestoes || []
@@ -4118,17 +6579,20 @@ async function openQuiz(quizId) {
 
   const retakeReleased = isRetakeReleased(quizId);
   const isStartAllowed = state.isTeacher || Boolean(quiz.allowStudentStart);
+  const attemptsUsed = getKnownAttemptCount(quizId);
+  const maxAttempts = resolveQuizMaxAttempts(quiz);
+  const hasRemainingAttempts = retakeReleased || state.isTeacher || attemptsUsed < maxAttempts;
 
-  if (!retakeReleased && attempt?.status === "completed") {
+  if (!hasRemainingAttempts && attempt?.status === "completed") {
     resultAlreadyCompleted.classList.remove("hidden");
-    showResult(attempt.result, "Você já realizou este questionário. Este é seu resultado anterior.");
+    showResult(attempt.result, `Você já realizou este questionário. Limite de tentativas atingido (${attemptsUsed}/${maxAttempts}).`);
     updateReviewButtons(quiz, attempt);
     return;
   }
 
-  if (!retakeReleased && attempt?.status === "cancelled") {
+  if (!hasRemainingAttempts && attempt?.status === "cancelled") {
     const base = attempt.cancelReason || "Avaliação bloqueada por violação de regras.";
-    showResult(attempt.result, "", { isBlocked: true, reason: base });
+    showResult(attempt.result, `Limite de tentativas atingido (${attemptsUsed}/${maxAttempts}).`, { isBlocked: true, reason: base });
     updateReviewButtons(quiz, attempt);
     return;
   }
@@ -4141,7 +6605,9 @@ async function openQuiz(quizId) {
   }
   selectedQuizMeta.innerHTML =
     `<li>Duração estimada: ${quiz.duration}</li>` +
-    `<li>Total de questões: ${quiz.questions.length}</li>`;
+    `<li>Total de questões: ${quiz.questions.length}</li>` +
+    `<li>Tentativas permitidas: ${maxAttempts}</li>` +
+    `<li>Tentativas usadas: ${attemptsUsed}</li>`;
 
   if (timedWarningDisplay) {
     if (hasTimedQuestion) {
@@ -4155,15 +6621,18 @@ async function openQuiz(quizId) {
   if (startRulesList) {
     startRulesList.innerHTML =
       `<li>Não é possível voltar para questões anteriores.</li>` +
+      `<li>Você pode pular uma questão para responder depois (até 3 vezes por tentativa).</li>` +
       `<li>As questões e alternativas são embaralhadas.</li>` +
       `<li>Não recarregue a página e não troque de tela; isso bloqueia a avaliação.</li>` +
       `<li>Ao bloquear o quiz, você perde o acesso à tentativa.</li>` +
+      `<li>${formatAttemptsRemainingMessage(quiz, attemptsUsed)}</li>` +
       (isStartAllowed ? "" : "<li><strong>Início bloqueado pelo professor no momento.</strong></li>");
   }
 
   if (startQuizButton) {
-    startQuizButton.disabled = !isStartAllowed;
-    startQuizButton.textContent = isStartAllowed ? "Iniciar questionário" : "Início bloqueado";
+    const canStartNow = isStartAllowed && hasRemainingAttempts;
+    startQuizButton.disabled = !canStartNow;
+    startQuizButton.textContent = canStartNow ? "Iniciar questionário" : "Início bloqueado";
   }
   if (startReloadButton) {
     if (isStartAllowed) {
@@ -4232,6 +6701,7 @@ function clearSessionState() {
   state.currentQuestionIndex = 0;
   state.activeQuestions = [];
   state.answers = {};
+  state.skipQuestionUsesRemaining = 3;
   state.isActive = false;
   state.isCancelled = false;
   state.timedOutQuestionId = null;
@@ -4243,6 +6713,9 @@ function clearSessionState() {
   clearQuestionTimerState();
   clearViolationTimers();
   hidePolicyWarning();
+  clearFocusWaitGrace();
+  hideWaitNonogram();
+  renderFocusWaitPersistentNotice();
   hideCancelModal();
   applyZoomCounterScale();
 }
@@ -4269,6 +6742,31 @@ function openActionModal({ title, text, confirmLabel, onConfirm }) {
   cancelModal.classList.remove("hidden");
 }
 
+function tryHandleReloadShortcut(event) {
+  if (!event || !state.isActive || state.isTeacher || !getSelectedQuiz()) {
+    return false;
+  }
+
+  const key = String(event.key || "").toLowerCase();
+  const isReloadShortcut = key === "f5" || ((event.ctrlKey || event.metaKey) && key === "r");
+  if (!isReloadShortcut) {
+    return false;
+  }
+
+  event.preventDefault();
+  openActionModal({
+    title: "Recarregar página?",
+    text: "Se você recarregar agora, este questionário será bloqueado e você perderá o acesso a ele.",
+    confirmLabel: "Sim, recarregar",
+    onConfirm: async () => {
+      await cancelQuiz("Questionário bloqueado ao recarregar a página durante a avaliação.", { blockedByViolation: true, skipScreen: true });
+      window.location.reload();
+    }
+  });
+
+  return true;
+}
+
 function updateNextButtonVisibility() {
   if (!nextButton) {
     return;
@@ -4280,6 +6778,7 @@ function updateNextButtonVisibility() {
   if (clearAnswerButton) {
     clearAnswerButton.classList.remove("hidden");
   }
+  updateSkipButtonVisibility();
   // mark selected option visually
   if (questionForm) {
     const allOptions = questionForm.querySelectorAll('.answer-option');
@@ -4291,11 +6790,33 @@ function updateNextButtonVisibility() {
   }
 }
 
+function updateSkipButtonVisibility() {
+  if (!skipQuestionButton) {
+    return;
+  }
+
+  if (state.isTeacher) {
+    skipQuestionButton.classList.add("hidden");
+    return;
+  }
+
+  const quiz = getSelectedQuiz();
+  const activeQuestions = state.activeQuestions.length ? state.activeQuestions : (quiz?.questions || []);
+  const canSkipByCount = Number(state.skipQuestionUsesRemaining || 0) > 0;
+  const hasAnotherQuestion = Number(state.currentQuestionIndex || 0) < activeQuestions.length - 1;
+  const isLockedByTimeout = Boolean(state.timedOutQuestionId);
+
+  skipQuestionButton.classList.remove("hidden");
+  skipQuestionButton.textContent = `Pular (${Math.max(0, Number(state.skipQuestionUsesRemaining || 0))})`;
+  skipQuestionButton.disabled = state.isTeacher || !state.isActive || !canSkipByCount || !hasAnotherQuestion || isLockedByTimeout;
+}
+
 function clearQuestionTimerState() {
   if (window.questionTimerInterval) {
     clearInterval(window.questionTimerInterval);
     window.questionTimerInterval = null;
   }
+  window.questionTimerDeadlineMs = 0;
   clearQuestionAutoAdvanceState();
   if (questionInfoArea) {
     questionInfoArea.innerHTML = "";
@@ -4314,6 +6835,7 @@ function clearQuestionAutoAdvanceState() {
     clearTimeout(window.questionAutoAdvanceTimeout);
     window.questionAutoAdvanceTimeout = null;
   }
+  window.questionAutoAdvanceDeadlineMs = 0;
 }
 
 function advanceQuestion(options = {}) {
@@ -4392,25 +6914,26 @@ function handleQuestionTimerExpired(question) {
 
   const timeoutButton = document.getElementById("question-timeout-next");
   const timeoutCountdown = document.getElementById("question-timeout-countdown");
-  let remainingSeconds = 10;
+  window.questionAutoAdvanceDeadlineMs = Date.now() + 10000;
 
-  window.questionAutoAdvanceInterval = setInterval(() => {
-    remainingSeconds -= 1;
+  const updateAutoAdvanceCountdown = () => {
+    const remainingMs = Math.max(0, Number(window.questionAutoAdvanceDeadlineMs || 0) - Date.now());
+    const remainingSeconds = Math.ceil(remainingMs / 1000);
+
     if (timeoutCountdown) {
       timeoutCountdown.textContent = String(Math.max(0, remainingSeconds));
     }
-    if (remainingSeconds <= 0) {
-      clearInterval(window.questionAutoAdvanceInterval);
-      window.questionAutoAdvanceInterval = null;
-    }
-  }, 1000);
 
-  window.questionAutoAdvanceTimeout = setTimeout(() => {
-    window.questionAutoAdvanceTimeout = null;
-    if (state.timedOutQuestionId === question.id) {
-      advanceQuestion({ allowBlank: true });
+    if (remainingMs === 0) {
+      clearQuestionAutoAdvanceState();
+      if (state.timedOutQuestionId === question.id) {
+        advanceQuestion({ allowBlank: true });
+      }
     }
-  }, 10000);
+  };
+
+  updateAutoAdvanceCountdown();
+  window.questionAutoAdvanceInterval = setInterval(updateAutoAdvanceCountdown, 200);
 
   if (timeoutButton) {
     timeoutButton.addEventListener("click", () => {
@@ -4426,27 +6949,32 @@ function renderQuestionTimer(question) {
     return;
   }
 
-  let timeLeft = question.timer;
+  const durationMs = Math.max(0, Number(question.timer || 0) * 1000);
+  window.questionTimerDeadlineMs = Date.now() + durationMs;
+
   const timerBox = document.createElement("div");
   timerBox.className = "question-timer";
-  timerBox.innerHTML = `<span>Tempo restante</span> <strong>${timeLeft}s</strong>`;
-  timerBox.classList.toggle("question-timer-danger", timeLeft <= 10);
+  timerBox.innerHTML = `<span>Tempo restante</span> <strong>${Math.ceil(durationMs / 1000)} s</strong>`;
+  timerBox.classList.toggle("question-timer-danger", durationMs <= 10000);
   questionInfoArea.appendChild(timerBox);
 
-  window.questionTimerInterval = setInterval(() => {
-    timeLeft -= 1;
+  const updateTimer = () => {
+    const remainingMs = Math.max(0, Number(window.questionTimerDeadlineMs || 0) - Date.now());
+    const timeLeft = Math.ceil(remainingMs / 1000);
     const strong = timerBox.querySelector("strong");
     if (strong) {
       strong.textContent = `${Math.max(0, timeLeft)} s`;
     }
     timerBox.classList.toggle("question-timer-danger", timeLeft <= 10);
 
-    if (timeLeft <= 0) {
-      clearInterval(window.questionTimerInterval);
-      window.questionTimerInterval = null;
+    if (remainingMs === 0) {
+      clearQuestionTimerState();
       handleQuestionTimerExpired(question);
     }
-  }, 1000);
+  };
+
+  updateTimer();
+  window.questionTimerInterval = setInterval(updateTimer, 200);
 }
 
 async function handleStartQuiz(event) {
@@ -4456,8 +6984,23 @@ async function handleStartQuiz(event) {
     return;
   }
 
+  if (!state.isTeacher) {
+    await refreshRemoteAttempts({ render: false });
+  }
+
+  const retakeReleased = isRetakeReleased(quiz.id);
+  const attemptsUsed = getKnownAttemptCount(quiz.id);
+  const maxAttempts = resolveQuizMaxAttempts(quiz);
+  const hasRemainingAttempts = retakeReleased || state.isTeacher || attemptsUsed < maxAttempts;
+
   if (!state.isTeacher && !quiz.allowStudentStart) {
     alert("Este quiz está bloqueado para início no momento. Aguarde o professor liberar.");
+    return;
+  }
+
+  if (!hasRemainingAttempts) {
+    alert(`Limite de tentativas atingido (${attemptsUsed}/${maxAttempts}).`);
+    await openQuiz(quiz.id);
     return;
   }
 
@@ -4474,6 +7017,7 @@ async function handleStartQuiz(event) {
 
   clearSessionState();
   state.activeQuestions = buildShuffledQuestionSet(quiz);
+  state.skipQuestionUsesRemaining = 3;
   state.isActive = true;
   state.attemptStartedAtMs = Date.now();
   state.attemptStartedAtLabel = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
@@ -4649,6 +7193,40 @@ function handleNextQuestion() {
   advanceQuestion();
 }
 
+function handleSkipQuestion() {
+  const quiz = getSelectedQuiz();
+  if (!quiz || !state.isActive) {
+    return;
+  }
+
+  if (state.timedOutQuestionId) {
+    return;
+  }
+
+  if (Number(state.skipQuestionUsesRemaining || 0) <= 0) {
+    showValidationMessage("Voce ja usou os 3 pulos deste questionario.");
+    updateSkipButtonVisibility();
+    return;
+  }
+
+  const activeQuestions = state.activeQuestions.length ? state.activeQuestions : quiz.questions;
+  if (!Array.isArray(activeQuestions) || Number(state.currentQuestionIndex || 0) >= activeQuestions.length - 1) {
+    return;
+  }
+
+  const currentIndex = Number(state.currentQuestionIndex || 0);
+  const currentQuestion = activeQuestions[currentIndex];
+  if (!currentQuestion) {
+    return;
+  }
+
+  clearValidationMessage();
+  const [movedQuestion] = activeQuestions.splice(currentIndex, 1);
+  activeQuestions.push(movedQuestion);
+  state.skipQuestionUsesRemaining = Math.max(0, Number(state.skipQuestionUsesRemaining || 0) - 1);
+  renderQuestion();
+}
+
 
 async function finishQuiz() {
   // Bloqueia finalização se excedeu violações ou quiz foi cancelado
@@ -4707,6 +7285,7 @@ async function finishQuiz() {
     answers: answersSnapshot,
     questionResults
   });
+  incrementKnownAttemptCount(quiz.id);
 
   if (shouldPersistLocalFallback) {
     saveAttemptToFirestore(quiz, result, answersSnapshot, questionResults);
@@ -4728,6 +7307,9 @@ function showResult(result, detailsText, options = {}) {
     maxPoints: 0,
     percent: 0,
     date: "",
+    focusExitPenaltyApplied: false,
+    focusExitPenaltyReason: "",
+    focusExitPenaltyAt: "",
     ...result
   };
   const isBlocked = Boolean(options.isBlocked);
@@ -4742,6 +7324,9 @@ function showResult(result, detailsText, options = {}) {
   resultScore.textContent = `${safe.earnedPoints} / ${safe.maxPoints}`;
   resultPercent.textContent = `${safe.percent}% de acertos`;
   const quiz = getSelectedQuiz();
+  const focusPenaltyApplied = Boolean(safe.focusExitPenaltyApplied);
+  const focusPenaltyReason = String(safe.focusExitPenaltyReason || "").trim();
+  const focusPenaltyAt = String(safe.focusExitPenaltyAt || "").trim();
 
   const prevDisabled = document.getElementById("result-review-disabled");
   if (prevDisabled && prevDisabled.parentNode) {
@@ -4774,6 +7359,33 @@ function showResult(result, detailsText, options = {}) {
   durationLine.className = "result-meta-line";
   durationLine.textContent = `Duração: ${durationLabel}`;
   resultDetails.appendChild(durationLine);
+
+  const shouldShowWaitNonogram = Boolean(quiz && !isBlocked && (state.isTeacher || !quiz.allowFocusExitAfterFinish));
+
+  if (!state.isTeacher && quiz && !isBlocked && !quiz.allowFocusExitAfterFinish) {
+    const waitingLine = document.createElement("p");
+    waitingLine.className = "result-meta-line result-meta-line-highlight";
+    waitingLine.textContent = `${FOCUS_WAIT_PROCESS_NAME} ativo: aguarde o professor clicar em '${FOCUS_WAIT_RELEASE_BUTTON_LABEL}' para encerrar o modo de espera sem penalidade.`;
+    resultDetails.appendChild(waitingLine);
+
+    if (document.visibilityState === "visible" && !isFullscreenActive()) {
+      triggerFocusWaitGrace("O modo foco exige tela cheia até o professor liberar o modo de espera.");
+    }
+  }
+
+  renderWaitNonogramForWaitMode(quiz, shouldShowWaitNonogram);
+
+  if (focusPenaltyApplied) {
+    const penaltyLine = document.createElement("p");
+    penaltyLine.className = "result-meta-line result-meta-line-highlight";
+    const details = [
+      "Penalidade registrada por sair do foco antes da liberação do professor.",
+      focusPenaltyReason ? `Motivo: ${focusPenaltyReason}` : "",
+      focusPenaltyAt ? `Quando: ${focusPenaltyAt}` : ""
+    ].filter(Boolean).join(" ");
+    penaltyLine.textContent = details;
+    resultDetails.appendChild(penaltyLine);
+  }
 
   if (isBlocked && blockedReason) {
     const reasonLine = document.createElement("p");
@@ -4827,6 +7439,8 @@ function showResult(result, detailsText, options = {}) {
     resultDetails.parentNode.appendChild(retakeNote);
   }
 
+  renderFocusWaitPersistentNotice();
+
   showOnlyScreen("result");
 }
 
@@ -4863,6 +7477,7 @@ async function cancelQuiz(reason, options = {}) {
   };
 
   saveStoredAttempt(quiz.id, attemptPayload);
+  incrementKnownAttemptCount(quiz.id);
   savePendingUnloadCancellation({
     quizId: quiz.id,
     quizTitle: quiz.title,
@@ -4951,6 +7566,10 @@ async function saveCancelledAttemptToFirestore(quiz, cancellation) {
     status: "cancelled",
     bloqueadoPorViolacao: Boolean(cancellation.blockedByViolation),
     motivoCancelamento: cancellation.reason || "",
+    penalidadeSaidaFoco: false,
+    penalidadeSaidaFocoMotivo: "",
+    penalidadeSaidaFocoEm: "",
+    processoControleFoco: FOCUS_WAIT_PROCESS_NAME,
     respostas: answersSnapshot,
     correcaoQuestoes: Array.isArray(questionResults) ? questionResults : []
   };
@@ -4971,6 +7590,9 @@ async function saveCancelledAttemptToFirestore(quiz, cancellation) {
     status: "cancelled",
     cancelReason: cancellation.reason,
     blockedByViolation: Boolean(cancellation.blockedByViolation),
+    focusExitPenaltyApplied: false,
+    focusExitPenaltyReason: "",
+    focusExitPenaltyAt: "",
     result: {
       quizId: quiz.id,
       quizTitle: quiz.title,
@@ -4983,6 +7605,9 @@ async function saveCancelledAttemptToFirestore(quiz, cancellation) {
       endedAt: result.endedAt || result.date || "",
       durationSeconds: Number(result.durationSeconds || 0),
       durationLabel: result.durationLabel || formatDurationFromSeconds(result.durationSeconds || 0),
+      focusExitPenaltyApplied: false,
+      focusExitPenaltyReason: "",
+      focusExitPenaltyAt: "",
       questionResults
     },
     answers: answersSnapshot,
@@ -5036,6 +7661,10 @@ function saveAttemptToFirestore(quiz, result, answers, questionResults = []) {
     status: "completed",
     bloqueadoPorViolacao: false,
     motivoCancelamento: "",
+    penalidadeSaidaFoco: Boolean(result.focusExitPenaltyApplied),
+    penalidadeSaidaFocoMotivo: String(result.focusExitPenaltyReason || ""),
+    penalidadeSaidaFocoEm: String(result.focusExitPenaltyAt || ""),
+    processoControleFoco: FOCUS_WAIT_PROCESS_NAME,
     respostas: answers,
     correcaoQuestoes: Array.isArray(questionResults) ? questionResults : []
   };
