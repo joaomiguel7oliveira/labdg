@@ -35,6 +35,8 @@
         <button id="teacher-panel-button" class="btn btn-ghost hidden" type="button">Resultados</button>
         <button id="teacher-classrooms-button" class="btn btn-ghost hidden" type="button">Turmas</button>
         <button id="teacher-builder-button" class="btn btn-ghost hidden" type="button">Criador de quiz</button>
+        <button id="teacher-nonogram-editor-button" class="btn btn-ghost hidden" type="button">Editor de
+          nonograma</button>
         <button id="logout-button" class="btn btn-ghost hidden" type="button">Sair</button>
       </div>
     </header>
@@ -124,6 +126,43 @@
       </div>
 
       <form id="builder-form" class="teacher-create-form" autocomplete="off">
+        <section class="builder-ai-panel" aria-labelledby="builder-ai-title">
+          <div class="builder-ai-head">
+            <div>
+              <h3 id="builder-ai-title">Gerar com IA</h3>
+              <p>Descreva o tema e deixe a IA montar a primeira versão do questionário.</p>
+            </div>
+            <button id="builder-ai-generate-button" type="button" class="btn btn-primary">Gerar com IA</button>
+          </div>
+          <textarea id="builder-ai-prompt"
+            placeholder="Ex.: Crie um quiz sobre fotossíntese para o 7º ano, com linguagem simples e foco em conceitos básicos."
+            autocomplete="off"></textarea>
+          <label class="builder-field-label" for="builder-ai-api-key">
+            Gemini API key (salva apenas neste navegador)
+            <input id="builder-ai-api-key" type="password" placeholder="Cole sua chave da Gemini API"
+              autocomplete="off" />
+          </label>
+          <div class="teacher-create-grid builder-ai-grid">
+            <label class="builder-field-label" for="builder-ai-question-count">
+              Questões para gerar
+              <input id="builder-ai-question-count" type="number" min="1" max="20" step="1" value="5" />
+            </label>
+            <label class="builder-field-label" for="builder-ai-difficulty">
+              Dificuldade
+              <select id="builder-ai-difficulty">
+                <option value="facil" selected>Fácil</option>
+                <option value="medio">Média</option>
+                <option value="dificil">Difícil</option>
+              </select>
+            </label>
+            <label class="builder-field-label" for="builder-ai-school-level">
+              Nível escolar
+              <input id="builder-ai-school-level" type="text" placeholder="Ex.: 7º ano" autocomplete="off" />
+            </label>
+          </div>
+          <p id="builder-ai-message" class="auth-message"></p>
+        </section>
+
         <input id="builder-title" type="text" placeholder="Título do quiz" required autocomplete="off" />
         <input id="builder-description" type="text" placeholder="Descrição" required autocomplete="off" />
         <div class="teacher-create-grid">
@@ -144,6 +183,10 @@
               <option value="hidden">Ocultas</option>
               <option value="revealed" selected>Reveladas no início (padrão)</option>
             </select>
+          </label>
+          <label class="builder-field-label" for="builder-max-attempts">
+            Número de tentativas
+            <input id="builder-max-attempts" type="number" min="1" step="1" value="1" required />
           </label>
         </div>
 
@@ -190,6 +233,7 @@
 
         <div class="quiz-actions">
           <button id="clear-answer-button" type="button" class="btn btn-ghost">Limpar</button>
+          <button id="skip-question-button" type="button" class="btn btn-ghost">Pular (3)</button>
           <button id="next-button" type="button" class="btn btn-primary">Próxima</button>
         </div>
       </div>
