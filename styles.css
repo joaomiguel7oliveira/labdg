@@ -725,12 +725,32 @@ input[type="text"]:focus {
 }
 
 .policy-overlay {
-    margin-top: 10px;
-    padding: 14px;
-    border-radius: 14px;
-    border: 1px solid #f6c7b8;
-    background: #fff1ec;
-    color: #8a2414;
+    position: fixed;
+    inset: 0;
+    background: rgba(31, 38, 51, 0.35);
+    z-index: 25;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.policy-overlay.hidden {
+    display: none;
+}
+
+.policy-card {
+    background: #fef5f0;
+    border-radius: 16px;
+    box-shadow: 0 12px 48px rgba(31, 38, 51, 0.25);
+    padding: 40px 36px;
+    max-width: 480px;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 20px;
+    text-align: center;
 }
 
 .modal-overlay {
@@ -784,15 +804,127 @@ input[type="text"]:focus {
 .policy-main-text {
     margin: 0;
     font-weight: 800;
+    font-size: 1.1rem;
+    color: #8a2414;
+    letter-spacing: 0.3px;
 }
 
 .policy-chances-text {
-    margin: 8px 0;
+    margin: 12px 0;
     font-weight: 700;
+    font-size: 0.95rem;
+    color: #5a1810;
+    line-height: 1.4;
 }
 
 .policy-countdown-line {
-    margin: 0 0 10px;
+    margin: 16px 0 20px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: #8a2414;
+    padding: 8px 12px;
+    background: rgba(255, 107, 61, 0.1);
+    border-radius: 8px;
+}
+
+.policy-countdown-line strong {
+    font-weight: 800;
+    color: #c74418;
+    font-size: 1.1em;
+}
+
+.policy-overlay h2 {
+    margin: 0 0 16px 0;
+    font-size: 1.6rem;
+    font-weight: 800;
+    color: #c74418;
+}
+
+.policy-overlay #policy-return-button {
+    margin-top: 8px;
+}
+
+#focus-wait-alert {
+    position: fixed !important;
+    inset: 0 !important;
+    background: rgba(31, 38, 51, 0.35) !important;
+    z-index: 25 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 20px !important;
+}
+
+#focus-wait-alert.hidden {
+    display: none !important;
+}
+
+#focus-wait-alert::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.focus-wait-alert-card {
+    position: relative;
+    z-index: 1;
+    background: #fef9f3 !important;
+    border-radius: 16px !important;
+    box-shadow: 0 12px 48px rgba(31, 38, 51, 0.25) !important;
+    padding: 40px 36px !important;
+    max-width: 520px !important;
+    width: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    gap: 20px !important;
+    text-align: center !important;
+    border: none !important;
+    font-size: 1rem !important;
+}
+
+#focus-wait-alert p {
+    margin: 0 !important;
+    line-height: 1.5 !important;
+}
+
+#focus-wait-alert p:first-of-type {
+    font-weight: 800 !important;
+    font-size: 1.3rem !important;
+    color: #c74418 !important;
+    margin-bottom: 12px !important;
+}
+
+#focus-wait-alert-text {
+    font-weight: 600 !important;
+    color: #8a2414 !important;
+    font-size: 0.95rem !important;
+    line-height: 1.5 !important;
+    margin: 16px 0 !important;
+}
+
+#focus-wait-back-btn {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    margin-top: 8px !important;
+    padding: 12px 24px !important;
+    white-space: nowrap !important;
+    font-size: 1rem !important;
+}
+
+.focus-wait-alert-counter {
+    font-weight: 800 !important;
+    font-size: 0.85rem !important;
+    opacity: 0.9 !important;
+}
+
+#focus-wait-alert-count {
+    font-weight: 800 !important;
+    color: currentColor !important;
+    font-size: 1rem !important;
 }
 
 .result-already-completed {
