@@ -4421,25 +4421,15 @@ function ensureFocusWaitAlertElement() {
 
   box = document.createElement("section");
   box.id = "focus-wait-alert";
-  box.style.position = "fixed";
-  box.style.right = "16px";
-  box.style.bottom = "16px";
-  box.style.zIndex = "9999";
-  box.style.maxWidth = "360px";
-  box.style.padding = "14px";
-  box.style.borderRadius = "12px";
-  box.style.background = "#fff8e1";
-  box.style.border = "1px solid #e3b341";
-  box.style.boxShadow = "0 12px 30px rgba(0,0,0,.18)";
-  box.style.fontSize = "0.95rem";
-  box.style.color = "#1f2937";
-  box.style.display = "none";
+  box.className = "hidden";
   box.innerHTML = `
-    <p style="margin:0 0 8px;font-weight:700;">${FOCUS_WAIT_PROCESS_NAME}</p>
-    <p id="focus-wait-alert-text" style="margin:0 0 10px;line-height:1.35;"></p>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-      <button type="button" id="focus-wait-back-btn" class="btn btn-primary btn-sm">Voltar para tela cheia</button>
-      <small id="focus-wait-alert-count" style="font-weight:700;color:#9a3412;"></small>
+    <div class="focus-wait-alert-card">
+      <p>${FOCUS_WAIT_PROCESS_NAME}</p>
+      <p id="focus-wait-alert-text"></p>
+      <button type="button" id="focus-wait-back-btn" class="btn btn-primary">
+        Voltar para tela cheia
+        <small id="focus-wait-alert-count" class="focus-wait-alert-counter"></small>
+      </button>
     </div>
   `;
 
@@ -4493,7 +4483,7 @@ function renderFocusWaitPersistentNotice() {
 function hideFocusWaitAlert() {
   const box = document.getElementById("focus-wait-alert");
   if (box) {
-    box.style.display = "none";
+    box.classList.add("hidden");
   }
 }
 
@@ -4505,12 +4495,12 @@ function updateFocusWaitAlert() {
   const remainingSeconds = Math.ceil(remainingMs / 1000);
 
   if (text) {
-    text.textContent = `${focusWaitGraceReason} Você tem 1 chance: retorne ao foco em tela cheia para evitar penalidade.`;
+    text.textContent = `${focusWaitGraceReason} Retorne ao foco em tela cheia para evitar penalidade.`;
   }
   if (count) {
     count.textContent = `${Math.max(0, remainingSeconds)}s`;
   }
-  box.style.display = "block";
+  box.classList.remove("hidden");
 }
 
 function clearFocusWaitGraceTimers() {
