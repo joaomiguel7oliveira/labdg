@@ -50,6 +50,7 @@ let focusWaitGraceTimeoutId = null;
 let focusWaitGraceIntervalId = null;
 let focusWaitGraceDeadlineMs = 0;
 let focusWaitGraceReason = "";
+let userProfileListenerUnsubscribe = null;
 
 const FOCUS_WAIT_PROCESS_NAME = "Espera em Foco da Turma";
 const FOCUS_WAIT_RELEASE_BUTTON_LABEL = "Liberar modo de espera";
@@ -907,6 +908,11 @@ async function moveStudentToClassroom(studentSlug, sourceClassroomId, targetClas
     if (teacherClassroomsMessage) {
       const displayName = student.nome || student.email || student.slug;
       teacherClassroomsMessage.textContent = `${displayName} movido(a) para ${targetClassroom.nome}.`;
+    }
+
+    // Se o painel de Resultados estiver aberto, recarregar seus dados
+    if (!teacherScreen.classList.contains("hidden")) {
+      await loadTeacherPanelData();
     }
   } catch (error) {
     state.classroomStudents = previousState;
@@ -2122,6 +2128,55 @@ async function showProfileScreen() {
   showOnlyScreen(null);
 }
 
+function setupUserProfileListener() {
+  // Desinscrever de qualquer listener anterior
+  if (userProfileListenerUnsubscribe) {
+    userProfileListenerUnsubscribe();
+    userProfileListenerUnsubscribe = null;
+  }
+
+  // Configurar listener para mudanças no perfil do usuário
+  if (!window.firebaseDoc || !window.firebaseDB || !window.firebaseOnSnapshot || !state.user?.uid) {
+    return;
+  }
+
+  try {
+    const indexRef = window.firebaseDoc(window.firebaseDB, "usuarios_index", state.user.uid);
+    userProfileListenerUnsubscribe = window.firebaseOnSnapshot(indexRef, (doc) => {
+      if (!doc.exists()) return;
+
+      const data = doc.data();
+      const newClassroomId = data.turmaId || "";
+      const newClassroomName = data.turmaNome || "";
+
+      // Verificar se a turma mudou
+      if (newClassroomId && newClassroomId !== state.classroomId) {
+        console.log(`Turma do estudante mudou de "${state.classroomId}" para "${newClassroomId}"`);
+        
+        // Atualizar estado
+        state.classroomId = newClassroomId;
+        state.classroomName = newClassroomName;
+        
+        // Atualizar cache local
+        localStorage.setItem(getProfileStorageKey(), JSON.stringify({
+          name: state.studentName,
+          slug: state.profileSlug,
+          classroomId: state.classroomId,
+          classroomName: state.classroomName
+        }));
+        
+        // Recarregar dados de quizzes da turma
+        refreshQuizPosts({ render: true });
+        
+        // Notificar usuário
+        showBottomNotice("Você foi movido para uma nova turma. Recarregando avaliações...", "info", 3000);
+      }
+    });
+  } catch (error) {
+    console.error("Erro ao configurar listener de perfil:", error);
+  }
+}
+
 async function ensureUserProfile() {
   const cachedRaw = localStorage.getItem(getProfileStorageKey());
   if (cachedRaw) {
@@ -2136,6 +2191,9 @@ async function ensureUserProfile() {
       return;
     }
     showAuthenticatedUI();
+    if (!state.isTeacher) {
+      setupUserProfileListener();
+    }
     return;
   }
 
@@ -2161,6 +2219,9 @@ async function ensureUserProfile() {
           return;
         }
         showAuthenticatedUI();
+        if (!state.isTeacher) {
+          setupUserProfileListener();
+        }
         return;
       }
     } catch (error) {
@@ -2286,6 +2347,9 @@ async function handleProfileSubmit(event) {
   state.isRenamingProfile = false;
   profileScreen.classList.add("hidden");
   showAuthenticatedUI();
+  if (!state.isTeacher) {
+    setupUserProfileListener();
+  }
 }
 
 function showAuthenticatedUI() {
