@@ -51,6 +51,19 @@ let focusWaitGraceIntervalId = null;
 let focusWaitGraceDeadlineMs = 0;
 let focusWaitGraceReason = "";
 let userProfileListenerUnsubscribe = null;
+let questionImageZoomState = {
+  src: "",
+  scale: 1,
+  minScale: 1,
+  maxScale: 4,
+  translateX: 0,
+  translateY: 0,
+  dragging: false,
+  dragStartX: 0,
+  dragStartY: 0,
+  startTranslateX: 0,
+  startTranslateY: 0
+};
 
 const FOCUS_WAIT_PROCESS_NAME = "Espera em Foco da Turma";
 const FOCUS_WAIT_RELEASE_BUTTON_LABEL = "Liberar modo de espera";
@@ -189,6 +202,15 @@ const cancelModalTitle = document.getElementById("cancel-modal-title");
 const cancelModalText = document.getElementById("cancel-modal-text");
 const cancelModalConfirm = document.getElementById("cancel-modal-confirm");
 const cancelModalCancel = document.getElementById("cancel-modal-cancel");
+const questionImageViewer = document.getElementById("question-image-viewer");
+const questionImageViewerTitle = document.getElementById("question-image-viewer-title");
+const questionImageViewerCaption = document.getElementById("question-image-viewer-caption");
+const questionImageViewerClose = document.getElementById("question-image-viewer-close");
+const questionImageViewerStage = document.getElementById("question-image-viewer-stage");
+const questionImageViewerImage = document.getElementById("question-image-viewer-image");
+const questionImageZoomOut = document.getElementById("question-image-zoom-out");
+const questionImageZoomReset = document.getElementById("question-image-zoom-reset");
+const questionImageZoomIn = document.getElementById("question-image-zoom-in");
 const cancelMessage = document.getElementById("cancel-message");
 const cancelBackHomeButton = document.getElementById("cancel-back-home-button");
 const cancelReviewButton = document.getElementById("cancel-review-button");
@@ -7083,6 +7105,10 @@ function showOnlyScreen(screenName) {
   Object.values(screens).forEach((screen) => screen.classList.add("hidden"));
   document.body.classList.toggle("quiz-mode", screenName === "quiz");
 
+  if (screenName !== "quiz") {
+    hideQuestionImageViewer();
+  }
+
   if (appHeader) {
     appHeader.classList.toggle("hidden", screenName === "quiz");
   }
@@ -7117,6 +7143,7 @@ function clearSessionState() {
   hidePolicyWarning();
   clearFocusWaitGrace();
   hideWaitNonogram();
+  hideQuestionImageViewer();
   renderFocusWaitPersistentNotice();
   hideCancelModal();
   applyZoomCounterScale();
@@ -7465,15 +7492,18 @@ function renderQuestion() {
     imgEl.className = "question-inline-image";
     imgEl.src = question.image;
     imgEl.alt = "Imagem da questao";
-    imgEl.style.maxWidth = "100%";
-    imgEl.style.maxHeight = "300px";
-    imgEl.style.objectFit = "contain";
-    imgEl.style.borderRadius = "12px";
-    imgEl.style.marginTop = "12px";
-    imgEl.style.marginBottom = "12px";
-    imgEl.style.marginLeft = "auto";
-    imgEl.style.marginRight = "auto";
-    imgEl.style.display = "block";
+    imgEl.title = "Clique para ampliar a imagem";
+    imgEl.setAttribute("role", "button");
+    imgEl.tabIndex = 0;
+    imgEl.setAttribute("aria-label", "Clique para ampliar a imagem da questão");
+    const openViewer = () => openQuestionImageViewer(question.image, question.title || "Imagem da questão");
+    imgEl.addEventListener("click", openViewer);
+    imgEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openViewer();
+      }
+    });
     questionDescription.parentNode.insertBefore(imgEl, questionForm);
   }
 
@@ -8269,6 +8299,162 @@ function clearValidationMessage() {
   if (existing) {
     existing.remove();
   }
+}
+
+function clampQuestionImageZoom(value) {
+  return Math.min(questionImageZoomState.maxScale, Math.max(questionImageZoomState.minScale, value));
+}
+
+function applyQuestionImageZoomTransform() {
+  if (!questionImageViewerImage) {
+    return;
+  }
+
+  questionImageViewerImage.style.transform = `translate(${questionImageZoomState.translateX}px, ${questionImageZoomState.translateY}px) scale(${questionImageZoomState.scale})`;
+}
+
+function resetQuestionImageZoom() {
+  questionImageZoomState.scale = 1;
+  questionImageZoomState.translateX = 0;
+  questionImageZoomState.translateY = 0;
+  applyQuestionImageZoomTransform();
+}
+
+function updateQuestionImageZoom(delta, anchorX = 0.5, anchorY = 0.5) {
+  const previousScale = questionImageZoomState.scale;
+  const nextScale = clampQuestionImageZoom(previousScale + delta);
+  if (nextScale === previousScale) {
+    return;
+  }
+
+  const factor = nextScale / previousScale;
+  const stageRect = questionImageViewerStage?.getBoundingClientRect();
+  const stageWidth = stageRect?.width || 1;
+  const stageHeight = stageRect?.height || 1;
+  const offsetX = (anchorX - 0.5) * stageWidth;
+  const offsetY = (anchorY - 0.5) * stageHeight;
+
+  questionImageZoomState.translateX = (questionImageZoomState.translateX - offsetX) * factor + offsetX;
+  questionImageZoomState.translateY = (questionImageZoomState.translateY - offsetY) * factor + offsetY;
+  questionImageZoomState.scale = nextScale;
+  applyQuestionImageZoomTransform();
+}
+
+function openQuestionImageViewer(src, title = "Imagem da questão") {
+  if (!questionImageViewer || !questionImageViewerImage || !src) {
+    return;
+  }
+
+  questionImageZoomState = {
+    src,
+    scale: 1,
+    minScale: 1,
+    maxScale: 4,
+    translateX: 0,
+    translateY: 0,
+    dragging: false,
+    dragStartX: 0,
+    dragStartY: 0,
+    startTranslateX: 0,
+    startTranslateY: 0
+  };
+
+  questionImageViewerImage.src = src;
+  questionImageViewerImage.alt = title;
+  questionImageViewer.classList.remove("hidden");
+  document.body.classList.add("question-image-viewer-open");
+  if (questionImageViewerTitle) {
+    questionImageViewerTitle.textContent = title;
+  }
+  if (questionImageViewerCaption) {
+    questionImageViewerCaption.textContent = "Use a roda do mouse, os botões ou arraste a imagem.";
+  }
+  resetQuestionImageZoom();
+}
+
+function hideQuestionImageViewer() {
+  if (!questionImageViewer || !questionImageViewerImage) {
+    return;
+  }
+
+  questionImageViewer.classList.add("hidden");
+  document.body.classList.remove("question-image-viewer-open");
+  questionImageViewerImage.removeAttribute("src");
+  questionImageZoomState.dragging = false;
+}
+
+if (questionImageViewerClose) {
+  questionImageViewerClose.addEventListener("click", hideQuestionImageViewer);
+}
+
+if (questionImageViewer) {
+  questionImageViewer.addEventListener("click", (event) => {
+    if (event.target?.matches?.("[data-close-question-image-viewer]")) {
+      hideQuestionImageViewer();
+    }
+  });
+}
+
+if (questionImageZoomOut) {
+  questionImageZoomOut.addEventListener("click", () => updateQuestionImageZoom(-0.25));
+}
+
+if (questionImageZoomReset) {
+  questionImageZoomReset.addEventListener("click", resetQuestionImageZoom);
+}
+
+if (questionImageZoomIn) {
+  questionImageZoomIn.addEventListener("click", () => updateQuestionImageZoom(0.25));
+}
+
+if (questionImageViewerStage) {
+  questionImageViewerStage.addEventListener("wheel", (event) => {
+    if (questionImageViewer.classList.contains("hidden")) {
+      return;
+    }
+
+    event.preventDefault();
+    const delta = event.deltaY > 0 ? -0.2 : 0.2;
+    const rect = questionImageViewerStage.getBoundingClientRect();
+    const anchorX = rect.width ? (event.clientX - rect.left) / rect.width : 0.5;
+    const anchorY = rect.height ? (event.clientY - rect.top) / rect.height : 0.5;
+    updateQuestionImageZoom(delta, anchorX, anchorY);
+  }, { passive: false });
+
+  questionImageViewerStage.addEventListener("pointerdown", (event) => {
+    if (questionImageViewer.classList.contains("hidden") || !questionImageViewerImage || questionImageZoomState.scale <= 1) {
+      return;
+    }
+
+    questionImageZoomState.dragging = true;
+    questionImageZoomState.dragStartX = event.clientX;
+    questionImageZoomState.dragStartY = event.clientY;
+    questionImageZoomState.startTranslateX = questionImageZoomState.translateX;
+    questionImageZoomState.startTranslateY = questionImageZoomState.translateY;
+    questionImageViewerStage.classList.add("is-dragging");
+    questionImageViewerStage.setPointerCapture(event.pointerId);
+  });
+
+  questionImageViewerStage.addEventListener("pointermove", (event) => {
+    if (!questionImageZoomState.dragging) {
+      return;
+    }
+
+    const deltaX = event.clientX - questionImageZoomState.dragStartX;
+    const deltaY = event.clientY - questionImageZoomState.dragStartY;
+    questionImageZoomState.translateX = questionImageZoomState.startTranslateX + deltaX;
+    questionImageZoomState.translateY = questionImageZoomState.startTranslateY + deltaY;
+    applyQuestionImageZoomTransform();
+  });
+
+  const stopDragging = () => {
+    questionImageZoomState.dragging = false;
+    questionImageViewerStage.classList.remove("is-dragging");
+  };
+
+  questionImageViewerStage.addEventListener("pointerup", stopDragging);
+  questionImageViewerStage.addEventListener("pointercancel", stopDragging);
+  questionImageViewerStage.addEventListener("pointerleave", stopDragging);
 }
 
 

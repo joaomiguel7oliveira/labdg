@@ -250,6 +250,30 @@
       </div>
     </section>
 
+    <div id="question-image-viewer" class="question-image-viewer hidden" role="dialog" aria-modal="true"
+      aria-label="Imagem da questão em zoom">
+      <div class="question-image-viewer-backdrop" data-close-question-image-viewer></div>
+      <div class="question-image-viewer-card">
+        <div class="question-image-viewer-head">
+          <div>
+            <h3 id="question-image-viewer-title">Imagem da questão</h3>
+            <p id="question-image-viewer-caption">Use a roda do mouse, os botões ou arraste a imagem.</p>
+          </div>
+          <button id="question-image-viewer-close" type="button" class="btn btn-ghost btn-sm" aria-label="Fechar">
+            ✕
+          </button>
+        </div>
+        <div id="question-image-viewer-stage" class="question-image-viewer-stage">
+          <img id="question-image-viewer-image" alt="Imagem ampliada da questão" />
+        </div>
+        <div class="question-image-viewer-actions">
+          <button id="question-image-zoom-out" type="button" class="btn btn-ghost btn-sm">-</button>
+          <button id="question-image-zoom-reset" type="button" class="btn btn-ghost btn-sm">100%</button>
+          <button id="question-image-zoom-in" type="button" class="btn btn-ghost btn-sm">+</button>
+        </div>
+      </div>
+    </div>
+
     <section id="cancel-screen" class="card hidden">
       <h2>Avaliação bloqueada</h2>
       <p id="cancel-message"></p>

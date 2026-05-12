@@ -40,6 +40,10 @@ body {
     padding: 20px;
 }
 
+body.question-image-viewer-open {
+    overflow: hidden;
+}
+
 .app-shell {
     width: min(980px, 100%);
     margin: 0 auto;
@@ -799,6 +803,122 @@ input[type="text"]:focus {
     display: flex;
     gap: 14px;
     margin-top: 8px;
+}
+
+.question-inline-image {
+    max-width: 100%;
+    max-height: 300px;
+    object-fit: contain;
+    border-radius: 12px;
+    margin-top: 12px;
+    margin-bottom: 12px;
+    margin-left: auto;
+    margin-right: auto;
+    display: block;
+    cursor: zoom-in;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.question-inline-image:hover {
+    transform: scale(1.01);
+    box-shadow: 0 10px 30px rgba(31, 38, 51, 0.12);
+}
+
+.question-image-viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.question-image-viewer.hidden {
+    display: none;
+}
+
+.question-image-viewer-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(10, 14, 22, 0.82);
+}
+
+.question-image-viewer-card {
+    position: relative;
+    z-index: 1;
+    width: min(1100px, 96vw);
+    max-height: 94vh;
+    background: #fffdf7;
+    border: 1px solid rgba(228, 215, 188, 0.9);
+    border-radius: 20px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.question-image-viewer-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.question-image-viewer-head h3 {
+    margin: 0;
+    font-family: "Sora", sans-serif;
+    font-size: 1.2rem;
+}
+
+.question-image-viewer-head p {
+    margin: 6px 0 0;
+    color: var(--ink-soft);
+    font-size: 0.95rem;
+}
+
+.question-image-viewer-stage {
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    min-height: min(68vh, 640px);
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(247, 244, 234, 0.96), rgba(255, 253, 247, 0.96));
+    border: 1px solid var(--line);
+    display: grid;
+    place-items: center;
+    touch-action: none;
+    cursor: grab;
+}
+
+.question-image-viewer-stage.is-dragging {
+    cursor: grabbing;
+}
+
+.question-image-viewer-stage img {
+    max-width: none;
+    max-height: none;
+    transform-origin: center center;
+    user-select: none;
+    -webkit-user-drag: none;
+    will-change: transform;
+    pointer-events: none;
+}
+
+.question-image-viewer-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.question-image-viewer-actions .btn {
+    min-width: 72px;
+}
+
+.question-image-viewer-card .btn-sm {
+    padding-inline: 12px;
 }
 
 .policy-main-text {
