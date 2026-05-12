@@ -1629,22 +1629,170 @@ function normalizeCustomQuiz(rawQuiz, docId) {
   };
 }
 
-function buildPostedQuizFromPost(rawPost, docId) {
+function normalizeStoredQuizQuestion(question = {}, index = 0) {
+  const options = Array.isArray(question.options)
+    ? question.options
+      .map((option, optionIndex) => {
+        if (typeof option === "string") {
+          return { value: String.fromCharCode(97 + optionIndex), label: option };
+        }
+        if (!option || typeof option.label !== "string") {
+          return null;
+        }
+        return {
+          value: String(option.value || String.fromCharCode(97 + optionIndex)),
+          label: String(option.label || "").trim()
+        };
+      })
+      .filter((option) => option && option.label)
+    : [];
+
+  const correctAnswer = String(question.correctAnswer || question.correctOptionValue || question.answerValue || "").trim();
+  const correctAnswerIndex = Number.parseInt(question.correctAnswerIndex, 10);
+  let resolvedCorrectAnswer = correctAnswer;
+
+  if (!resolvedCorrectAnswer && Number.isFinite(correctAnswerIndex) && options[correctAnswerIndex]) {
+    resolvedCorrectAnswer = options[correctAnswerIndex].value;
+  }
+
+  if (!resolvedCorrectAnswer && options[0]) {
+    resolvedCorrectAnswer = options[0].value;
+  }
+
+  return {
+    id: String(question.id || `q${index + 1}`),
+    type: String(question.type || "single-choice"),
+    title: String(question.title || `Questão ${index + 1}`),
+    description: String(question.description || "Selecione apenas uma alternativa."),
+    explanation: String(question.explanation || question.questionExplanation || question.justification || question.justificativa || ""),
+    points: Math.max(1, Number.parseInt(question.points, 10) || 1),
+    timer: Math.max(0, Number.parseInt(question.timer, 10) || 0),
+    options,
+    image: typeof question.image === "string" ? question.image : null,
+    answerToken: String(question.answerToken || ""),
+    correctAnswer: resolvedCorrectAnswer
+  };
+}
+
+async function loadQuizQuestionsFromFirestore(quizId, fallbackQuestions = [], maxCount = null) {
+  if (!quizId || !window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs) {
+    return Array.isArray(fallbackQuestions) ? [...fallbackQuestions] : [];
+  }
+
+  try {
+    const questionsRef = window.firebaseCollection(window.firebaseDB, "quizzes_custom", quizId, "questions");
+    const snap = await window.firebaseGetDocs(questionsRef);
+    const loadedQuestions = [];
+
+    snap.forEach((docSnap) => {
+      const data = docSnap.data() || {};
+      loadedQuestions.push({
+        id: docSnap.id,
+        ...data,
+        order: Number.isFinite(Number(data.order)) ? Number(data.order) : Number.parseInt(String(docSnap.id || "").replace(/\D+/g, ""), 10) || loadedQuestions.length + 1
+      });
+    });
+
+    loadedQuestions.sort((a, b) => (Number(a.order || 0) - Number(b.order || 0)) || String(a.id || "").localeCompare(String(b.id || ""), "pt-BR"));
+    const limitedQuestions = Number.isFinite(Number(maxCount)) && Number(maxCount) > 0
+      ? loadedQuestions.slice(0, Number(maxCount))
+      : loadedQuestions;
+
+    const normalized = limitedQuestions
+      .map((question, index) => normalizeStoredQuizQuestion(question, index))
+      .filter((question) => question.title && Array.isArray(question.options) && question.options.length >= 2);
+
+    return normalized.length ? normalized : (Array.isArray(fallbackQuestions) ? [...fallbackQuestions] : []);
+  } catch (error) {
+    console.error(`Erro ao carregar questões do quiz ${quizId}:`, error);
+    return Array.isArray(fallbackQuestions) ? [...fallbackQuestions] : [];
+  }
+}
+
+async function loadCustomQuizFromFirestore(quizId, fallbackData = null) {
+  if (!quizId || !window.firebaseDB || !window.firebaseDoc || !window.firebaseGetDoc) {
+    return fallbackData ? normalizeCustomQuiz(fallbackData, quizId) : null;
+  }
+
+  try {
+    const quizRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId);
+    const snap = await window.firebaseGetDoc(quizRef);
+    if (!snap.exists()) {
+      return fallbackData ? normalizeCustomQuiz(fallbackData, quizId) : null;
+    }
+
+    const data = snap.data() || {};
+    const expectedCount = Number.parseInt(String(data.questionCount || fallbackData?.questionCount || 0), 10) || 0;
+    const questions = await loadQuizQuestionsFromFirestore(quizId, Array.isArray(data.questions) ? data.questions : (Array.isArray(fallbackData?.questions) ? fallbackData.questions : []), expectedCount);
+    const merged = {
+      ...fallbackData,
+      ...data,
+      questions
+    };
+
+    return normalizeCustomQuiz(merged, quizId);
+  } catch (error) {
+    console.error(`Erro ao carregar quiz customizado ${quizId}:`, error);
+    return fallbackData ? normalizeCustomQuiz(fallbackData, quizId) : null;
+  }
+}
+
+async function replaceQuizQuestionsInFirestore(quizId, questions) {
+  if (!quizId || !window.firebaseDB || !window.firebaseCollection || !window.firebaseSetDoc || !window.firebaseDoc) {
+    return;
+  }
+
+  const questionsRef = window.firebaseCollection(window.firebaseDB, "quizzes_custom", quizId, "questions");
+  if (window.firebaseGetDocs && window.firebaseDeleteDoc) {
+    try {
+      const existingSnap = await window.firebaseGetDocs(questionsRef);
+      const deletions = [];
+      existingSnap.forEach((docSnap) => {
+        deletions.push(window.firebaseDeleteDoc(docSnap.ref));
+      });
+      await Promise.all(deletions);
+    } catch (error) {
+      console.error(`Erro ao limpar questões antigas do quiz ${quizId}:`, error);
+    }
+  }
+
+  const writes = (Array.isArray(questions) ? questions : []).map((question, index) => {
+    const questionId = String(question.id || `q${index + 1}`);
+    const questionRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId, "questions", questionId);
+    const payload = {
+      ...question,
+      id: questionId,
+      order: index + 1,
+      atualizadoEmIso: new Date().toISOString()
+    };
+    return window.firebaseSetDoc(questionRef, payload);
+  });
+
+  await Promise.all(writes);
+}
+
+function buildPostedQuizFromPost(rawPost, docId, sourceQuiz = null) {
   if (!rawPost || rawPost.ativo === false) {
     return null;
   }
 
+  const mergedQuestions = Array.isArray(sourceQuiz?.questions) && sourceQuiz.questions.length
+    ? sourceQuiz.questions
+    : (Array.isArray(rawPost.questions) ? rawPost.questions : []);
+
   const normalized = normalizeCustomQuiz({
-    title: rawPost.title,
-    description: rawPost.description,
-    duration: rawPost.duration,
-    maxAttempts: rawPost.maxAttempts,
-    alternativesVisibilityMode: rawPost.alternativesVisibilityMode,
-    questions: rawPost.questions,
-    allowStudentReview: rawPost.allowStudentReview,
-    allowStudentStart: rawPost.allowStudentStart,
-    allowFocusExitAfterFinish: rawPost.allowFocusExitAfterFinish
-  }, String(rawPost.quizId || docId));
+    title: String(sourceQuiz?.title || rawPost.title || "").trim(),
+    description: String(sourceQuiz?.description || rawPost.description || "").trim(),
+    duration: sourceQuiz?.duration || rawPost.duration,
+    maxAttempts: sourceQuiz?.maxAttempts || rawPost.maxAttempts,
+    alternativesVisibilityMode: sourceQuiz?.alternativesVisibilityMode || rawPost.alternativesVisibilityMode,
+    questions: mergedQuestions,
+    allowStudentReview: sourceQuiz?.allowStudentReview ?? rawPost.allowStudentReview,
+    allowStudentStart: sourceQuiz?.allowStudentStart ?? rawPost.allowStudentStart,
+    allowFocusExitAfterFinish: sourceQuiz?.allowFocusExitAfterFinish ?? rawPost.allowFocusExitAfterFinish,
+    aiGenerationPrompt: sourceQuiz?.aiGenerationPrompt || rawPost.aiGenerationPrompt || "",
+    aiGenerationProvider: sourceQuiz?.aiGenerationProvider || rawPost.aiGenerationProvider || ""
+  }, String(rawPost.quizId || sourceQuiz?.id || docId));
 
   if (!normalized) {
     return null;
@@ -1759,14 +1907,19 @@ async function refreshCustomQuizzes(options = {}) {
       const snap = await window.firebaseGetDocs(customRef);
       const nextCustom = [];
 
-      snap.forEach((docSnap) => {
-        const data = docSnap.data();
+      const loaded = await Promise.all(snap.docs.map(async (docSnap) => {
+        const data = docSnap.data() || {};
         if (data?.ativo === false) {
-          return;
+          return null;
         }
-        const normalized = normalizeCustomQuiz(data, docSnap.id);
-        if (normalized) {
-          nextCustom.push(normalized);
+
+        const quizData = await loadCustomQuizFromFirestore(docSnap.id, data);
+        return quizData;
+      }));
+
+      loaded.forEach((quiz) => {
+        if (quiz) {
+          nextCustom.push(quiz);
         }
       });
 
@@ -1774,8 +1927,18 @@ async function refreshCustomQuizzes(options = {}) {
       await refreshQuizPosts({ render: false });
     } else {
       await refreshQuizPosts({ render: false });
+      const uniqueQuizIds = Array.from(new Set((state.quizPosts || []).map((post) => String(post.quizId || "").trim()).filter(Boolean)));
+      const sourceQuizMap = {};
+
+      await Promise.all(uniqueQuizIds.map(async (quizId) => {
+        const sourceQuiz = await loadCustomQuizFromFirestore(quizId, null);
+        if (sourceQuiz) {
+          sourceQuizMap[quizId] = sourceQuiz;
+        }
+      }));
+
       const postedVisible = (state.quizPosts || [])
-        .map((post) => buildPostedQuizFromPost(post, post.id))
+        .map((post) => buildPostedQuizFromPost(post, post.id, sourceQuizMap[String(post.quizId || "").trim()] || null))
         .filter(Boolean);
 
       // Se houver mais de uma postagem do mesmo quiz para a turma, mantém a mais recente por atualizadoEmIso.
@@ -1847,7 +2010,7 @@ async function postQuizToClassroom(quizId, classroomId) {
       duration: quiz.duration,
       maxAttempts: Math.max(1, Number.parseInt(quiz.maxAttempts, 10) || 1),
       alternativesVisibilityMode: quiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed",
-      questions: quiz.questions,
+      questionCount: Array.isArray(quiz.questions) ? quiz.questions.length : 0,
       allowStudentReview: Boolean(quiz.allowStudentReview),
       allowStudentStart: true,
       allowFocusExitAfterFinish: Boolean(quiz.allowFocusExitAfterFinish),
@@ -2022,16 +2185,27 @@ async function removeQuiz(quizId) {
     if (quiz.isCustom) {
       const quizRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId);
       const answersRef = window.firebaseDoc(window.firebaseDB, "quizzes_answer_keys", quizId);
+      const questionsRef = window.firebaseCollection ? window.firebaseCollection(window.firebaseDB, "quizzes_custom", quizId, "questions") : null;
       if (window.firebaseDeleteDoc) {
+        let questionDeletes = [];
+        if (questionsRef && window.firebaseGetDocs) {
+          try {
+            const questionsSnap = await window.firebaseGetDocs(questionsRef);
+            questionDeletes = questionsSnap.docs.map((docSnap) => window.firebaseDeleteDoc(docSnap.ref));
+          } catch (error) {
+            console.error("Erro ao listar questões para exclusão do quiz:", error);
+          }
+        }
         await Promise.all([
           window.firebaseDeleteDoc(quizRef),
-          window.firebaseDeleteDoc(answersRef)
+          window.firebaseDeleteDoc(answersRef),
+          ...questionDeletes
         ]);
       } else {
         await Promise.all([
           window.firebaseSetDoc(quizRef, {
             ativo: false,
-            questions: [],
+            questionCount: 0,
             atualizadoEmIso: new Date().toISOString()
           }, { merge: true }),
           window.firebaseSetDoc(answersRef, {
@@ -3690,27 +3864,69 @@ function buildGeminiGenerationPrompt({ prompt, questionCount, difficulty, school
   ].join("\n");
 }
 
+function sanitizeGeminiTextPayload(text = "") {
+  return String(text || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/```json\s*/gi, "")
+    .replace(/```\s*/g, "")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    .trim();
+}
+
+function tryParseJsonCandidate(candidate = "") {
+  const normalized = String(candidate || "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const parseAttempts = [
+    normalized,
+    normalized.replace(/,\s*([}\]])/g, "$1")
+  ];
+
+  for (const attempt of parseAttempts) {
+    try {
+      return JSON.parse(attempt);
+    } catch (_error) {
+      // Continua tentando outras variações.
+    }
+  }
+
+  return null;
+}
+
 function extractJsonPayload(text = "") {
-  const normalized = String(text || "").trim();
+  const normalized = sanitizeGeminiTextPayload(text);
   if (!normalized) {
     throw new Error("A Gemini nao retornou conteudo utilizavel.");
   }
 
-  try {
-    return JSON.parse(normalized);
-  } catch (_error) {
-    const firstBrace = normalized.indexOf("{");
-    const lastBrace = normalized.lastIndexOf("}");
-    if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-      throw new Error("A Gemini retornou um formato invalido para o quiz.");
-    }
+  const direct = tryParseJsonCandidate(normalized);
+  if (direct && typeof direct === "object") {
+    return direct;
+  }
 
-    try {
-      return JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
-    } catch (_innerError) {
-      throw new Error("A Gemini retornou um formato invalido para o quiz.");
+  const firstBrace = normalized.indexOf("{");
+  const lastBrace = normalized.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    const slicedObject = tryParseJsonCandidate(normalized.slice(firstBrace, lastBrace + 1));
+    if (slicedObject && typeof slicedObject === "object") {
+      return slicedObject;
     }
   }
+
+  const firstBracket = normalized.indexOf("[");
+  const lastBracket = normalized.lastIndexOf("]");
+  if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+    const slicedArray = tryParseJsonCandidate(normalized.slice(firstBracket, lastBracket + 1));
+    if (Array.isArray(slicedArray) && slicedArray.length && typeof slicedArray[0] === "object") {
+      return slicedArray[0];
+    }
+  }
+
+  throw new Error("A Gemini retornou um formato invalido para o quiz.");
 }
 
 async function requestQuizFromGemini({ apiKey, prompt }) {
@@ -3777,7 +3993,12 @@ async function requestQuizFromGemini({ apiKey, prompt }) {
       if (response.ok) {
         const json = await response.json();
         const text = json?.candidates?.[0]?.content?.parts?.map((part) => part?.text || "").join("") || "";
-        return extractJsonPayload(text);
+        try {
+          return extractJsonPayload(text);
+        } catch (parseError) {
+          nonFatalErrors.push(`[${version}/${model}] parse-failed`);
+          continue;
+        }
       }
 
       const errorBody = await response.text();
@@ -3806,6 +4027,69 @@ async function requestQuizFromGemini({ apiKey, prompt }) {
     ? ` Modelos testados sem sucesso: ${nonFatalErrors.slice(0, 5).join(" | ")}.`
     : "";
   throw new Error(`Falha ao gerar quiz: nenhum modelo Gemini compatível foi encontrado para sua chave/projeto.${fallbackInfo}`);
+}
+
+async function requestQuizFromGeminiInBatches({
+  apiKey,
+  prompt,
+  questionCount,
+  difficulty,
+  schoolLevel,
+  duration,
+  maxAttempts,
+  alternativesVisibilityMode
+}) {
+  const safeCount = Math.min(20, Math.max(1, Number(questionCount) || 1));
+  const batchSize = safeCount > 10 ? 6 : safeCount;
+  const totalBatches = Math.ceil(safeCount / batchSize);
+  const normalizedQuizzes = [];
+
+  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
+    const remaining = safeCount - (batchIndex * batchSize);
+    const currentBatchCount = Math.min(batchSize, remaining);
+    const batchPrompt = buildGeminiGenerationPrompt({
+      prompt: `${prompt}\n\nLote ${batchIndex + 1}/${totalBatches}. Gere perguntas diferentes das anteriores e sem repetir enunciados.`,
+      questionCount: currentBatchCount,
+      difficulty,
+      schoolLevel,
+      duration,
+      maxAttempts,
+      alternativesVisibilityMode
+    });
+
+    const rawBatchQuiz = await requestQuizFromGemini({
+      apiKey,
+      prompt: batchPrompt
+    });
+
+    const normalizedBatchQuiz = normalizeGeneratedQuizPayload(rawBatchQuiz, {
+      prompt,
+      duration,
+      maxAttempts,
+      alternativesVisibilityMode
+    });
+
+    normalizedQuizzes.push(normalizedBatchQuiz);
+  }
+
+  const mergedQuestions = normalizedQuizzes
+    .flatMap((quiz) => Array.isArray(quiz.questions) ? quiz.questions : [])
+    .slice(0, safeCount)
+    .map((question, index) => ({ ...question, id: `q${index + 1}` }));
+
+  if (!mergedQuestions.length) {
+    throw new Error("A IA nao retornou questoes validas.");
+  }
+
+  const firstQuiz = normalizedQuizzes[0] || {};
+  return {
+    title: String(firstQuiz.title || "Quiz gerado com IA").trim(),
+    description: String(firstQuiz.description || "Quiz gerado com IA.").trim(),
+    duration: normalizeAiDuration(firstQuiz.duration || duration),
+    maxAttempts: Math.max(1, Number.parseInt(firstQuiz.maxAttempts || maxAttempts, 10) || 1),
+    alternativesVisibilityMode: firstQuiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed",
+    questions: mergedQuestions
+  };
 }
 
 function normalizeGeneratedQuizPayload(rawQuiz, fallback = {}) {
@@ -3920,26 +4204,45 @@ async function handleBuilderGenerateWithAi() {
   }
 
   try {
-    const generationPrompt = buildGeminiGenerationPrompt({
-      prompt,
-      questionCount: requestedQuestionCount,
-      difficulty,
-      schoolLevel,
-      duration,
-      maxAttempts,
-      alternativesVisibilityMode
-    });
+    let generatedQuiz;
+    if (requestedQuestionCount > 10) {
+      if (builderAiMessage) {
+        builderAiMessage.textContent = `Gerando em lotes (${requestedQuestionCount} questões) para evitar truncamento...`;
+      }
 
-    const rawQuiz = await requestQuizFromGemini({
-      apiKey,
-      prompt: generationPrompt
-    });
-    const generatedQuiz = normalizeGeneratedQuizPayload(rawQuiz, {
-      prompt,
-      duration,
-      maxAttempts,
-      alternativesVisibilityMode
-    });
+      generatedQuiz = await requestQuizFromGeminiInBatches({
+        apiKey,
+        prompt,
+        questionCount: requestedQuestionCount,
+        difficulty,
+        schoolLevel,
+        duration,
+        maxAttempts,
+        alternativesVisibilityMode
+      });
+    } else {
+      const generationPrompt = buildGeminiGenerationPrompt({
+        prompt,
+        questionCount: requestedQuestionCount,
+        difficulty,
+        schoolLevel,
+        duration,
+        maxAttempts,
+        alternativesVisibilityMode
+      });
+
+      const rawQuiz = await requestQuizFromGemini({
+        apiKey,
+        prompt: generationPrompt
+      });
+
+      generatedQuiz = normalizeGeneratedQuizPayload(rawQuiz, {
+        prompt,
+        duration,
+        maxAttempts,
+        alternativesVisibilityMode
+      });
+    }
 
     state.builderDraftGeneratedWithAi = true;
     state.builderDraftAiPrompt = prompt;
@@ -4173,7 +4476,7 @@ async function handleBuilderCreateQuiz(event) {
     duration,
     maxAttempts,
     alternativesVisibilityMode,
-    questions: questionsWithTokens,
+    questionCount: questionsWithTokens.length,
     ativo: true,
     criadoPorUid: state.user?.uid || "",
     criadoPorEmail: state.user?.email || "",
@@ -4199,6 +4502,7 @@ async function handleBuilderCreateQuiz(event) {
   try {
     const quizRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId);
     const answersRef = window.firebaseDoc(window.firebaseDB, "quizzes_answer_keys", quizId);
+    const quizQuestionsPromise = replaceQuizQuestionsInFirestore(quizId, questionsWithTokens);
     await Promise.all([
       window.firebaseSetDoc(quizRef, payload),
       window.firebaseSetDoc(answersRef, {
@@ -4207,7 +4511,8 @@ async function handleBuilderCreateQuiz(event) {
         atualizadoEmIso: new Date().toISOString(),
         atualizadoPorUid: state.user?.uid || "",
         atualizadoPorEmail: state.user?.email || ""
-      }, { merge: true })
+      }, { merge: true }),
+      quizQuestionsPromise
     ]);
     if (builderMessage) {
       builderMessage.textContent = state.editingQuizId ? "Quiz atualizado com sucesso." : "Quiz salvo no banco com sucesso. Agora poste para uma turma na home.";
