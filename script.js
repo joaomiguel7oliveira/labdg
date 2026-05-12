@@ -1696,7 +1696,7 @@ function normalizeStoredQuizQuestion(question = {}, index = 0) {
   };
 }
 
-async function loadQuizQuestionsFromFirestore(quizId, fallbackQuestions = [], maxCount = null) {
+async function loadQuizQuestionsFromFirestore(quizId, fallbackQuestions = [], maxCount = null, revision = "") {
   if (!quizId || !window.firebaseDB || !window.firebaseCollection || !window.firebaseGetDocs) {
     return Array.isArray(fallbackQuestions) ? [...fallbackQuestions] : [];
   }
@@ -1708,6 +1708,9 @@ async function loadQuizQuestionsFromFirestore(quizId, fallbackQuestions = [], ma
 
     snap.forEach((docSnap) => {
       const data = docSnap.data() || {};
+      if (revision && String(data.revision || "") !== String(revision)) {
+        return;
+      }
       loadedQuestions.push({
         id: docSnap.id,
         ...data,
@@ -1745,10 +1748,12 @@ async function loadCustomQuizFromFirestore(quizId, fallbackData = null) {
 
     const data = snap.data() || {};
     const expectedCount = Number.parseInt(String(data.questionCount || fallbackData?.questionCount || 0), 10) || 0;
-    const questions = await loadQuizQuestionsFromFirestore(quizId, Array.isArray(data.questions) ? data.questions : (Array.isArray(fallbackData?.questions) ? fallbackData.questions : []), expectedCount);
+    const revision = String(data.questionsRevision || fallbackData?.questionsRevision || "").trim();
+    const questions = await loadQuizQuestionsFromFirestore(quizId, Array.isArray(data.questions) ? data.questions : (Array.isArray(fallbackData?.questions) ? fallbackData.questions : []), expectedCount, revision);
     const merged = {
       ...fallbackData,
       ...data,
+      questionsRevision: revision,
       questions
     };
 
@@ -1759,25 +1764,12 @@ async function loadCustomQuizFromFirestore(quizId, fallbackData = null) {
   }
 }
 
-async function replaceQuizQuestionsInFirestore(quizId, questions) {
+async function replaceQuizQuestionsInFirestore(quizId, questions, revision) {
   if (!quizId || !window.firebaseDB || !window.firebaseCollection || !window.firebaseSetDoc || !window.firebaseDoc) {
     return;
   }
 
   const questionsRef = window.firebaseCollection(window.firebaseDB, "quizzes_custom", quizId, "questions");
-  if (window.firebaseGetDocs && window.firebaseDeleteDoc) {
-    try {
-      const existingSnap = await window.firebaseGetDocs(questionsRef);
-      const deletions = [];
-      existingSnap.forEach((docSnap) => {
-        deletions.push(window.firebaseDeleteDoc(docSnap.ref));
-      });
-      await Promise.all(deletions);
-    } catch (error) {
-      console.error(`Erro ao limpar questões antigas do quiz ${quizId}:`, error);
-    }
-  }
-
   const writes = (Array.isArray(questions) ? questions : []).map((question, index) => {
     const questionId = String(question.id || `q${index + 1}`);
     const questionRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId, "questions", questionId);
@@ -1785,6 +1777,7 @@ async function replaceQuizQuestionsInFirestore(quizId, questions) {
       ...question,
       id: questionId,
       order: index + 1,
+      revision: String(revision || ""),
       atualizadoEmIso: new Date().toISOString()
     };
     return window.firebaseSetDoc(questionRef, payload);
@@ -4491,6 +4484,7 @@ async function handleBuilderCreateQuiz(event) {
       answerToken: buildAnswerToken(quizId, questionId, correctAnswer)
     };
   });
+  const questionsRevision = new Date().toISOString();
 
   const payload = {
     title,
@@ -4499,6 +4493,7 @@ async function handleBuilderCreateQuiz(event) {
     maxAttempts,
     alternativesVisibilityMode,
     questionCount: questionsWithTokens.length,
+    questionsRevision,
     ativo: true,
     criadoPorUid: state.user?.uid || "",
     criadoPorEmail: state.user?.email || "",
@@ -4524,7 +4519,7 @@ async function handleBuilderCreateQuiz(event) {
   try {
     const quizRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId);
     const answersRef = window.firebaseDoc(window.firebaseDB, "quizzes_answer_keys", quizId);
-    const quizQuestionsPromise = replaceQuizQuestionsInFirestore(quizId, questionsWithTokens);
+    const quizQuestionsPromise = replaceQuizQuestionsInFirestore(quizId, questionsWithTokens, questionsRevision);
     await Promise.all([
       window.firebaseSetDoc(quizRef, payload),
       window.firebaseSetDoc(answersRef, {
