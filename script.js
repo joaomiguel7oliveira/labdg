@@ -1169,16 +1169,17 @@ function persistUnloadCancellation() {
   saveStoredAttempt(quiz.id, {
     status: "cancelled",
     cancelReason: reason,
-    blockedByViolation: false,
+    blockedByViolation: true,
     at: cancelAt,
     result,
     answers: answersSnapshot,
     questionResults
   });
+  lockQuizAccess(quiz.id);
   // Salva no Firestore para o painel do professor
   saveCancelledAttemptToFirestore(quiz, {
     reason,
-    blockedByViolation: false,
+    blockedByViolation: true,
     at: cancelAt,
     result,
     answers: answersSnapshot,
@@ -1192,7 +1193,7 @@ function persistUnloadCancellation() {
     quizTitle: quiz.title,
     questionsLength: quiz.questions.length,
     reason,
-    blockedByViolation: false,
+    blockedByViolation: true,
     at: cancelAt,
     result,
     answers: answersSnapshot,
@@ -2654,6 +2655,7 @@ async function releaseQuizForStudent(slug, quizId) {
       const storageKey = getStorageKey(quizId);
       localStorage.removeItem(storageKey);
       setStoredAttemptCount(quizId, 0);
+      clearQuizAccessLock(quizId);
       if (state.remoteAttemptsByQuiz) {
         delete state.remoteAttemptsByQuiz[quizId];
       }
@@ -4234,6 +4236,11 @@ function getAttemptCountStorageKey(quizId) {
   return `quiz_attempt_count_${uid}_${quizId}`;
 }
 
+function getQuizAccessLockStorageKey(quizId) {
+  const uid = state.user?.uid || "anon";
+  return `quiz_access_lock_${uid}_${quizId}`;
+}
+
 function getStoredAttempt(quizId) {
   const raw = localStorage.getItem(getStorageKey(quizId));
   return raw ? JSON.parse(raw) : null;
@@ -4252,6 +4259,26 @@ function setStoredAttemptCount(quizId, value) {
     return;
   }
   localStorage.setItem(getAttemptCountStorageKey(quizId), String(normalized));
+}
+
+function isQuizAccessLocked(quizId) {
+  return localStorage.getItem(getQuizAccessLockStorageKey(quizId)) === "1";
+}
+
+function lockQuizAccess(quizId) {
+  if (!quizId) {
+    return;
+  }
+
+  localStorage.setItem(getQuizAccessLockStorageKey(quizId), "1");
+}
+
+function clearQuizAccessLock(quizId) {
+  if (!quizId) {
+    return;
+  }
+
+  localStorage.removeItem(getQuizAccessLockStorageKey(quizId));
 }
 
 function getKnownAttempt(quizId) {
@@ -4313,6 +4340,19 @@ function saveStoredAttempt(quizId, payload) {
   localStorage.setItem(getStorageKey(quizId), JSON.stringify(payload));
   if (state.remoteAttemptsLoaded) {
     state.remoteAttemptsByQuiz[quizId] = payload;
+  }
+}
+
+function syncAttemptCacheForQuiz(quizId, payload, attemptsUsed) {
+  if (!quizId) {
+    return;
+  }
+
+  saveStoredAttempt(quizId, payload);
+  setStoredAttemptCount(quizId, attemptsUsed);
+  if (state.remoteAttemptsLoaded) {
+    state.remoteAttemptsByQuiz[quizId] = payload;
+    state.remoteAttemptCountsByQuiz[quizId] = attemptsUsed;
   }
 }
 
@@ -6279,7 +6319,8 @@ function renderHome() {
     let attempt = getKnownAttempt(quiz.id);
     const attemptsUsed = getKnownAttemptCount(quiz.id);
     const maxAttempts = resolveQuizMaxAttempts(quiz);
-    const hasRemainingAttempts = state.isTeacher || attemptsUsed < maxAttempts;
+    const accessLocked = isQuizAccessLocked(quiz.id);
+    const hasRemainingAttempts = state.isTeacher || (!accessLocked && attemptsUsed < maxAttempts);
     // Se o professor liberou nova tentativa, remove status cancelado/completed
     if (isRetakeReleased(quiz.id)) {
       // Remove do localStorage e do estado
@@ -6303,6 +6344,7 @@ function renderHome() {
       quiz.allowStudentStart ? "1" : "0",
       quiz.allowStudentReview ? "1" : "0",
       quiz.allowFocusExitAfterFinish ? "1" : "0",
+      accessLocked ? "1" : "0",
       `${attemptsUsed}/${maxAttempts}`,
       attempt?.result?.date || "",
       state.isTeacher ? (postedClassroomsMap[quiz.id] || []).map((item) => item.id).join(",") : "",
@@ -6635,7 +6677,8 @@ async function openQuiz(quizId) {
   const isStartAllowed = state.isTeacher || Boolean(quiz.allowStudentStart);
   const attemptsUsed = getKnownAttemptCount(quizId);
   const maxAttempts = resolveQuizMaxAttempts(quiz);
-  const hasRemainingAttempts = retakeReleased || state.isTeacher || attemptsUsed < maxAttempts;
+  const accessLocked = isQuizAccessLocked(quizId);
+  const hasRemainingAttempts = retakeReleased || state.isTeacher || (!accessLocked && attemptsUsed < maxAttempts);
 
   if (!hasRemainingAttempts && attempt?.status === "completed") {
     resultAlreadyCompleted.classList.remove("hidden");
@@ -7045,10 +7088,16 @@ async function handleStartQuiz(event) {
   const retakeReleased = isRetakeReleased(quiz.id);
   const attemptsUsed = getKnownAttemptCount(quiz.id);
   const maxAttempts = resolveQuizMaxAttempts(quiz);
-  const hasRemainingAttempts = retakeReleased || state.isTeacher || attemptsUsed < maxAttempts;
+  const accessLocked = isQuizAccessLocked(quiz.id);
+  const hasRemainingAttempts = retakeReleased || state.isTeacher || (!accessLocked && attemptsUsed < maxAttempts);
 
   if (!state.isTeacher && !quiz.allowStudentStart) {
     alert("Este quiz está bloqueado para início no momento. Aguarde o professor liberar.");
+    return;
+  }
+
+  if (!state.isTeacher && accessLocked && !retakeReleased) {
+    alert("Você perdeu o acesso a novas tentativas deste questionário.");
     return;
   }
 
@@ -7341,9 +7390,7 @@ async function finishQuiz() {
   });
   incrementKnownAttemptCount(quiz.id);
 
-  if (shouldPersistLocalFallback) {
-    saveAttemptToFirestore(quiz, result, answersSnapshot, questionResults);
-  }
+  saveAttemptToFirestore(quiz, result, answersSnapshot, questionResults);
 
   const baseMessage = result.earnedPoints === result.maxPoints
     ? "Parabéns, você gabaritou todas as questões!"
@@ -7532,6 +7579,9 @@ async function cancelQuiz(reason, options = {}) {
 
   saveStoredAttempt(quiz.id, attemptPayload);
   incrementKnownAttemptCount(quiz.id);
+  if (blockedByViolation) {
+    lockQuizAccess(quiz.id);
+  }
   savePendingUnloadCancellation({
     quizId: quiz.id,
     quizTitle: quiz.title,
@@ -7722,6 +7772,13 @@ function saveAttemptToFirestore(quiz, result, answers, questionResults = []) {
     respostas: answers,
     correcaoQuestoes: Array.isArray(questionResults) ? questionResults : []
   };
+
+  syncAttemptCacheForQuiz(quiz.id, {
+    status: "completed",
+    result,
+    answers,
+    questionResults
+  }, Number(getStoredAttemptCount(quiz.id) || 0));
 
   Promise.all([
     window.firebaseSetDoc(userRef, userPayload, { merge: true }),
