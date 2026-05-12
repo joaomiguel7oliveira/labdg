@@ -2152,11 +2152,11 @@ function setupUserProfileListener() {
       // Verificar se a turma mudou
       if (newClassroomId && newClassroomId !== state.classroomId) {
         console.log(`Turma do estudante mudou de "${state.classroomId}" para "${newClassroomId}"`);
-        
+
         // Atualizar estado
         state.classroomId = newClassroomId;
         state.classroomName = newClassroomName;
-        
+
         // Atualizar cache local
         localStorage.setItem(getProfileStorageKey(), JSON.stringify({
           name: state.studentName,
@@ -2164,10 +2164,10 @@ function setupUserProfileListener() {
           classroomId: state.classroomId,
           classroomName: state.classroomName
         }));
-        
+
         // Recarregar dados de quizzes da turma
         refreshQuizPosts({ render: true });
-        
+
         // Notificar usuário
         showBottomNotice("Você foi movido para uma nova turma. Recarregando avaliações...", "info", 3000);
       }
