@@ -1587,12 +1587,12 @@ function gradeQuizAttemptObfuscated(quiz, answersSnapshot, at) {
   };
 }
 
-function normalizeCustomQuiz(rawQuiz, docId) {
-  if (!rawQuiz || !Array.isArray(rawQuiz.questions)) {
+function normalizeCustomQuiz(rawQuiz, docId, allowEmptyQuestions = false) {
+  if (!rawQuiz) {
     return null;
   }
 
-  const normalizedQuestions = rawQuiz.questions
+  const normalizedQuestions = Array.isArray(rawQuiz.questions) ? rawQuiz.questions
     .map((question, index) => {
       const options = Array.isArray(question.options)
         ? question.options
@@ -1628,9 +1628,9 @@ function normalizeCustomQuiz(rawQuiz, docId) {
         answerToken: String(question.answerToken || "")
       };
     })
-    .filter(Boolean);
+    .filter(Boolean) : [];
 
-  if (!rawQuiz.title || normalizedQuestions.length === 0) {
+  if (!rawQuiz.title || (!allowEmptyQuestions && normalizedQuestions.length === 0)) {
     return null;
   }
 
@@ -1647,6 +1647,8 @@ function normalizeCustomQuiz(rawQuiz, docId) {
     aiGenerationPrompt: String(rawQuiz.aiGenerationPrompt || rawQuiz.aiPrompt || rawQuiz.generationPrompt || "").trim(),
     aiGenerationProvider: String(rawQuiz.aiGenerationProvider || "").trim(),
     questions: normalizedQuestions,
+    questionCount: Number.parseInt(rawQuiz.questionCount, 10) || normalizedQuestions.length,
+    questionsRevision: String(rawQuiz.questionsRevision || "").trim(),
     isCustom: true
   };
 }
@@ -1734,22 +1736,30 @@ async function loadQuizQuestionsFromFirestore(quizId, fallbackQuestions = [], ma
   }
 }
 
-async function loadCustomQuizFromFirestore(quizId, fallbackData = null) {
+async function loadCustomQuizFromFirestore(quizId, fallbackData = null, options = {}) {
   if (!quizId || !window.firebaseDB || !window.firebaseDoc || !window.firebaseGetDoc) {
-    return fallbackData ? normalizeCustomQuiz(fallbackData, quizId) : null;
+    return fallbackData ? normalizeCustomQuiz(fallbackData, quizId, Boolean(options.allowEmptyQuestions)) : null;
   }
 
   try {
     const quizRef = window.firebaseDoc(window.firebaseDB, "quizzes_custom", quizId);
     const snap = await window.firebaseGetDoc(quizRef);
     if (!snap.exists()) {
-      return fallbackData ? normalizeCustomQuiz(fallbackData, quizId) : null;
+      return fallbackData ? normalizeCustomQuiz(fallbackData, quizId, Boolean(options.allowEmptyQuestions)) : null;
     }
 
     const data = snap.data() || {};
+    const allowEmptyQuestions = Boolean(options.allowEmptyQuestions);
     const expectedCount = Number.parseInt(String(data.questionCount || fallbackData?.questionCount || 0), 10) || 0;
     const revision = String(data.questionsRevision || fallbackData?.questionsRevision || "").trim();
-    const questions = await loadQuizQuestionsFromFirestore(quizId, Array.isArray(data.questions) ? data.questions : (Array.isArray(fallbackData?.questions) ? fallbackData.questions : []), expectedCount, revision);
+    const questions = options.loadQuestions === false
+      ? []
+      : await loadQuizQuestionsFromFirestore(
+        quizId,
+        Array.isArray(data.questions) ? data.questions : (Array.isArray(fallbackData?.questions) ? fallbackData.questions : []),
+        expectedCount,
+        revision
+      );
     const merged = {
       ...fallbackData,
       ...data,
@@ -1757,10 +1767,10 @@ async function loadCustomQuizFromFirestore(quizId, fallbackData = null) {
       questions
     };
 
-    return normalizeCustomQuiz(merged, quizId);
+    return normalizeCustomQuiz(merged, quizId, allowEmptyQuestions);
   } catch (error) {
     console.error(`Erro ao carregar quiz customizado ${quizId}:`, error);
-    return fallbackData ? normalizeCustomQuiz(fallbackData, quizId) : null;
+    return fallbackData ? normalizeCustomQuiz(fallbackData, quizId, Boolean(options.allowEmptyQuestions)) : null;
   }
 }
 
@@ -1928,7 +1938,7 @@ async function refreshCustomQuizzes(options = {}) {
           return null;
         }
 
-        const quizData = await loadCustomQuizFromFirestore(docSnap.id, data);
+        const quizData = await loadCustomQuizFromFirestore(docSnap.id, data, { loadQuestions: false, allowEmptyQuestions: true });
         return quizData;
       }));
 
@@ -1946,7 +1956,7 @@ async function refreshCustomQuizzes(options = {}) {
       const sourceQuizMap = {};
 
       await Promise.all(uniqueQuizIds.map(async (quizId) => {
-        const sourceQuiz = await loadCustomQuizFromFirestore(quizId, null);
+        const sourceQuiz = await loadCustomQuizFromFirestore(quizId, null, { loadQuestions: false, allowEmptyQuestions: true });
         if (sourceQuiz) {
           sourceQuizMap[quizId] = sourceQuiz;
         }
@@ -4314,28 +4324,34 @@ async function startEditingQuiz(quizId) {
     return;
   }
 
-  const answerKey = await getQuizAnswerKeySecure(quiz.id);
+  const hydratedQuiz = await ensureQuizQuestionsLoaded(quiz);
+  if (!hydratedQuiz) {
+    alert("Não foi possível carregar as questões deste quiz agora.");
+    return;
+  }
 
-  state.editingQuizId = quiz.id;
+  const answerKey = await getQuizAnswerKeySecure(hydratedQuiz.id);
+
+  state.editingQuizId = hydratedQuiz.id;
   openBuilderScreen(false);
-  builderTitleInput.value = quiz.title || "";
-  builderDescriptionInput.value = quiz.description || "";
-  builderDurationInput.value = quiz.duration || "8 min";
+  builderTitleInput.value = hydratedQuiz.title || "";
+  builderDescriptionInput.value = hydratedQuiz.description || "";
+  builderDurationInput.value = hydratedQuiz.duration || "8 min";
   if (builderMaxAttemptsInput) {
-    builderMaxAttemptsInput.value = String(Math.max(1, Number.parseInt(quiz.maxAttempts, 10) || 1));
+    builderMaxAttemptsInput.value = String(Math.max(1, Number.parseInt(hydratedQuiz.maxAttempts, 10) || 1));
   }
   if (builderAlternativesVisibilityInput) {
-    builderAlternativesVisibilityInput.value = quiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed";
+    builderAlternativesVisibilityInput.value = hydratedQuiz.alternativesVisibilityMode === "hidden" ? "hidden" : "revealed";
   }
   if (builderAiPromptInput) {
-    builderAiPromptInput.value = String(quiz.aiGenerationPrompt || "");
+    builderAiPromptInput.value = String(hydratedQuiz.aiGenerationPrompt || "");
   }
-  state.builderDraftGeneratedWithAi = Boolean(String(quiz.aiGenerationPrompt || "").trim());
-  state.builderDraftAiPrompt = String(quiz.aiGenerationPrompt || "").trim();
+  state.builderDraftGeneratedWithAi = Boolean(String(hydratedQuiz.aiGenerationPrompt || "").trim());
+  state.builderDraftAiPrompt = String(hydratedQuiz.aiGenerationPrompt || "").trim();
   builderQuestions.innerHTML = "";
-  (quiz.questions || []).forEach((question, index) => {
+  (hydratedQuiz.questions || []).forEach((question, index) => {
     const questionId = question.id || `q${index + 1}`;
-    const decodedAnswer = decodeAnswerToken(quiz.id, questionId, question.answerToken);
+    const decodedAnswer = decodeAnswerToken(hydratedQuiz.id, questionId, question.answerToken);
     addBuilderQuestionCard({
       ...question,
       correctAnswer: String(answerKey[questionId] || decodedAnswer || "")
@@ -4796,6 +4812,32 @@ async function syncLatestAttemptForQuiz(quizId) {
   }
 
   return getKnownAttempt(quizId);
+}
+
+async function ensureQuizQuestionsLoaded(quiz) {
+  if (!quiz || !quiz.isCustom || Array.isArray(quiz.questions) && quiz.questions.length > 0) {
+    return quiz;
+  }
+
+  const loadedQuiz = await loadCustomQuizFromFirestore(quiz.id, quiz, { loadQuestions: true, allowEmptyQuestions: false });
+  if (!loadedQuiz || !Array.isArray(loadedQuiz.questions) || loadedQuiz.questions.length === 0) {
+    return null;
+  }
+
+  const quizIndex = state.customQuizzes.findIndex((item) => item.id === quiz.id);
+  if (quizIndex >= 0) {
+    state.customQuizzes[quizIndex] = loadedQuiz;
+  }
+
+  const postedIndex = state.quizPosts.findIndex((item) => item.id === quiz.id || item.quizId === quiz.id);
+  if (postedIndex >= 0) {
+    state.quizPosts[postedIndex] = {
+      ...state.quizPosts[postedIndex],
+      ...loadedQuiz
+    };
+  }
+
+  return loadedQuiz;
 }
 
 function getPendingFocusWaitContext() {
@@ -6728,7 +6770,7 @@ function renderHome() {
       </div>
       <p>${quiz.description}</p>
       <ul class="quiz-meta">
-        <li>Questões: ${quiz.questions.length}</li>
+        <li>Questões: ${Number(quiz.questionCount || quiz.questions.length || 0)}</li>
         <li>Tentativas: ${state.isTeacher ? maxAttempts : `${attemptsUsed}/${maxAttempts}`}</li>
       </ul>
       ${state.isTeacher ? `<p class="quiz-visibility-note"><strong>Visível para:</strong> ${postedClassroomsHtml}</p>` : ""}
@@ -6995,36 +7037,42 @@ async function openQuiz(quizId) {
     return;
   }
 
+  const hydratedQuiz = await ensureQuizQuestionsLoaded(quiz);
+  if (!hydratedQuiz) {
+    alert("Não foi possível carregar as questões deste quiz no momento.");
+    return;
+  }
+
   const retakeReleased = isRetakeReleased(quizId);
-  const isStartAllowed = state.isTeacher || Boolean(quiz.allowStudentStart);
+  const isStartAllowed = state.isTeacher || Boolean(hydratedQuiz.allowStudentStart);
   const attemptsUsed = getKnownAttemptCount(quizId);
-  const maxAttempts = resolveQuizMaxAttempts(quiz);
+  const maxAttempts = resolveQuizMaxAttempts(hydratedQuiz);
   const accessLocked = isQuizAccessLocked(quizId);
   const hasRemainingAttempts = retakeReleased || state.isTeacher || (!accessLocked && attemptsUsed < maxAttempts);
 
   if (!hasRemainingAttempts && attempt?.status === "completed") {
     resultAlreadyCompleted.classList.remove("hidden");
     showResult(attempt.result, `Você já realizou este questionário. Limite de tentativas atingido (${attemptsUsed}/${maxAttempts}).`);
-    updateReviewButtons(quiz, attempt);
+    updateReviewButtons(hydratedQuiz, attempt);
     return;
   }
 
   if (!hasRemainingAttempts && attempt?.status === "cancelled") {
     const base = attempt.cancelReason || "Avaliação bloqueada por violação de regras.";
     showResult(attempt.result, `Limite de tentativas atingido (${attemptsUsed}/${maxAttempts}).`, { isBlocked: true, reason: base });
-    updateReviewButtons(quiz, attempt);
+    updateReviewButtons(hydratedQuiz, attempt);
     return;
   }
 
-  selectedQuizTitle.textContent = quiz.title;
-  selectedQuizDescription.textContent = quiz.description;
-  const hasTimedQuestion = quiz.questions.some((question) => Number(question.timer || 0) > 0);
+  selectedQuizTitle.textContent = hydratedQuiz.title;
+  selectedQuizDescription.textContent = hydratedQuiz.description;
+  const hasTimedQuestion = hydratedQuiz.questions.some((question) => Number(question.timer || 0) > 0);
   if (studentNameDisplay) {
     studentNameDisplay.textContent = state.studentName || "-";
   }
   selectedQuizMeta.innerHTML =
-    `<li>Duração estimada: ${quiz.duration}</li>` +
-    `<li>Total de questões: ${quiz.questions.length}</li>` +
+    `<li>Duração estimada: ${hydratedQuiz.duration}</li>` +
+    `<li>Total de questões: ${hydratedQuiz.questions.length}</li>` +
     `<li>Tentativas permitidas: ${maxAttempts}</li>` +
     `<li>Tentativas usadas: ${attemptsUsed}</li>`;
 
@@ -7045,7 +7093,7 @@ async function openQuiz(quizId) {
       `<li>Não recarregue a página e não troque de tela; isso bloqueia a avaliação.</li>` +
       `<li>Ao bloquear o quiz, você perde o acesso à tentativa.</li>` +
       `<li>${formatAttemptsRemainingMessage(quiz, attemptsUsed)}</li>` +
-      (isStartAllowed ? "" : "<li><strong>Início bloqueado pelo professor no momento.</strong></li>");
+        (isStartAllowed ? "" : "<li><strong>Início bloqueado pelo professor no momento.</strong></li>");
   }
 
   if (startQuizButton) {
@@ -7446,14 +7494,14 @@ async function handleStartQuiz(event) {
   }
 
   clearSessionState();
-  state.activeQuestions = buildShuffledQuestionSet(quiz);
+  state.activeQuestions = buildShuffledQuestionSet(hydratedQuiz);
   state.skipQuestionUsesRemaining = 3;
   state.isActive = true;
   state.attemptStartedAtMs = Date.now();
   state.attemptStartedAtLabel = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
   lockZoomForQuiz();
 
-  await consumeRetakeRelease(quiz.id);
+  await consumeRetakeRelease(hydratedQuiz.id);
 
   showOnlyScreen("quiz");
   cancelButton.classList.add("hidden");
